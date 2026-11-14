@@ -414,7 +414,7 @@ func serve(ctx context.Context, c config, o runOpts) error {
 		}
 		return err
 	})
-	hosted, err := metadata.NewHosted(vault)
+	hosted, err := forkHosted(ctx, s, vault) // HolyArrs fork: private defaults first
 	if err != nil {
 		return fmt.Errorf("metadata server: %w", err)
 	}
@@ -518,7 +518,7 @@ func serve(ctx context.Context, c config, o runOpts) error {
 	// network; never cloud metadata addresses). HOLYARRS_RELEASE_FEED
 	// points it elsewhere (tests).
 	uc := &updates.Checker{Store: s, Version: version}
-	uc.ReleaseFeed = env("HOLYARRS_RELEASE_FEED", updates.DefaultReleaseFeed)
+	uc.ReleaseFeed = env("HOLYARRS_RELEASE_FEED", forkReleaseFeed) // HolyArrs fork: this fork's releases
 	uc.ClientFor = func(allowLocal bool) *http.Client {
 		allow := outbound.PublicOnly
 		if allowLocal {
