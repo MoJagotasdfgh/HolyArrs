@@ -376,7 +376,6 @@ crawl_kbps
 created
 created_at
 created_by
-created_unix
 credits
 crew
 current
@@ -418,7 +417,6 @@ department
 description
 desktop
 detail
-details
 details_source
 device
 died
@@ -726,7 +724,6 @@ hints
 history
 history_other_days
 history_routine_days
-hits
 hlsManifestUrl
 hold
 hold_unknown_releases
@@ -774,7 +771,6 @@ indexers
 indexes
 info
 infoHash
-infohash
 inherit
 inspection_status
 instanceName
@@ -859,7 +855,6 @@ latest
 layer
 leans
 leave_folders
-leechers
 left
 left_out
 left_until_done
@@ -913,8 +908,6 @@ machine_made
 machine_translated
 made
 made_by
-magnet
-magnetUrl
 main
 mal
 mapped
@@ -1073,6 +1066,7 @@ next_search
 next_try
 next_try_at
 no_downloader
+no_feed
 no_formats
 no_limit
 no_release
@@ -1405,7 +1399,6 @@ requested_by
 requests
 require_two_factor_admins
 required
-res
 reset_time_utc
 resolution
 resource

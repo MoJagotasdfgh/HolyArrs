@@ -65,7 +65,7 @@
 
 	function setFormat(v: string) {
 		form.format = v as SourceForm['format'];
-		if (form.format === 'site' && !form.site) pickSite(form, builtInSites[0].id);
+		if (form.format === 'site' && !form.site) pickSite(form, builtInSites[0]?.id ?? '');
 	}
 
 	function toggleKind(k: string, on: boolean) {
@@ -154,7 +154,7 @@
 						<option value="torznab">{t('settings.sources.torznab')}</option>
 						<option value="newznab">{t('settings.sources.newznab')}</option>
 						<option value="rss">{t('settings.sources.rss')}</option>
-						{#if isNew || form.format === 'site'}<option value="site">{t('settings.sources.site')}</option>{/if}
+						{#if (isNew && builtInSites.length > 0) || form.format === 'site'}<option value="site">{t('settings.sources.site')}</option>{/if}
 					</select>
 				</Field>
 				{#if form.format === 'site'}

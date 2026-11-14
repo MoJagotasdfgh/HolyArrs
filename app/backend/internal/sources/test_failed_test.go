@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync/atomic"
 	"testing"
 )
@@ -28,17 +27,11 @@ func listedHealth(t *testing.T, base string, id int64) Health {
 }
 
 // A failed test of an enabled Source shows as failed after a reload too,
-// for a built-in site and an ordinary Source alike, and a later working
-// test shows it working again.
+// and a later working test shows it working again. (HolyArrs fork, patch
+// 001: the built-in site cases left with the site readers.)
 // route: POST /api/v1/sources/{id}/test
 func TestFailedTestKeepsShowingAfterReload(t *testing.T) {
 	t.Parallel()
-	login, err := os.ReadFile("testdata/sites/iptorrents_login.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(login) }))
-	t.Cleanup(site.Close)
 	var up atomic.Bool
 	idx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !up.Load() {
@@ -66,8 +59,6 @@ func TestFailedTestKeepsShowingAfterReload(t *testing.T) {
 	cases := []struct {
 		name, body, state string
 	}{
-		{"no cookie", `{"name":"IPT","format":"site","site":"iptorrents","url":"` + site.URL + `","allow_local_network":true}`, StateAuthFailed},
-		{"junk cookie", `{"name":"IPT2","format":"site","site":"iptorrents","url":"` + site.URL + `","api_key":"uid=1; pass=x","allow_local_network":true}`, StateAuthFailed},
 		{"ordinary", `{"name":"Lab","format":"torznab","url":"` + idx.URL + `/api","api_key":"k","allow_local_network":true}`, StateUnreachable},
 	}
 	ids := map[string]int64{}

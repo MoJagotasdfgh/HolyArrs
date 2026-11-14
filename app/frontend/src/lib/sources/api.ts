@@ -116,14 +116,12 @@ export function formFrom(s: SourceView): SourceForm {
 	};
 }
 
-// The built-in sites a Source can read directly, with their polite limits.
-// Names are the sites' own names, so they are not translated.
-export const builtInSites = [
-	{ id: 'knaben', name: 'Knaben', url: 'https://api.knaben.org', key: false, kinds: ['movie', 'tv', 'music'], gap_ms: 2000, per_hour: 100, timeout_s: 20 },
-	{ id: 'torrentscsv', name: 'TorrentsCSV', url: 'https://torrents-csv.com', key: false, kinds: ['movie', 'tv', 'music'], gap_ms: 2000, per_hour: 100, timeout_s: 20 },
-	{ id: 'subsplease', name: 'SubsPlease', url: 'https://subsplease.org', key: false, kinds: ['tv'], gap_ms: 2000, per_hour: 100, timeout_s: 20 },
-	{ id: 'iptorrents', name: 'IPTorrents', url: 'https://iptorrents.com', key: true, kinds: ['movie', 'tv', 'music'], gap_ms: 3000, per_hour: 60, timeout_s: 30 }
-] as const;
+// The sites a Source can read directly, with their polite limits.
+// HolyArrs fork, patch 001: the four built-in site readers are out, so the
+// list is empty and the page hides the "site" choice; a plugged-in reader
+// (sites.go) appears here when the add-a-source wizard reads the server's list.
+export type BuiltInSite = { id: string; name: string; url: string; key: boolean; kinds: readonly string[]; gap_ms: number; per_hour: number; timeout_s: number };
+export const builtInSites: readonly BuiltInSite[] = [];
 
 // pickSite fills a new form with a built-in site's address and limits.
 export function pickSite(f: SourceForm, id: string): void {
