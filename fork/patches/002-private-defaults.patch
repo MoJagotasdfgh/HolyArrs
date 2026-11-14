@@ -1,0 +1,218 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Muhammad Jagot <MoJagotasdfgh@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 23:03:24 +0200
+Subject: [PATCH] fork 002: private defaults (own keys, no install count, no
+ trailers, fork update feed)
+
+What: a new file, cmd/holyarrs/fork_defaults.go. On every start, before the
+metadata mode and "Count this install" are read, it writes the settings
+rows this fork keeps private when the owner has not set them: metadata
+mode "own" (Your own keys: the HolyArrs metadata server is never
+contacted), install_country_count off, autoplay_trailers off (so the
+trailer pass stays quiet). A choice made in Settings is never overwritten.
+The update check reads this fork's releases.
+
+Why: a private home install that does not phone home by default.
+
+Check: cmd/holyarrs/fork_check_002_test.go (fresh database gets the three
+rows and mode own is in force; an owner's choice stays; main() seeds before
+it reads; the update feed is the fork's).
+
+Note: under go test the start-up seed does nothing (testing.Testing()), so
+upstream's own tests keep upstream's defaults; the check tests the seed.
+
+Upstream files edited: cmd/holyarrs/main.go, two lines changed in place
+(metadata.NewHosted becomes forkHosted, which seeds first; the update feed
+default); no lines added, as upstream caps main.go at 800 lines.
+No database migration: ordinary settings rows.
+---
+ .../cmd/holyarrs/fork_check_002_test.go       | 78 +++++++++++++++++++
+ app/backend/cmd/holyarrs/fork_defaults.go     | 71 +++++++++++++++++
+ app/backend/cmd/holyarrs/main.go              |  4 +-
+ 3 files changed, 151 insertions(+), 2 deletions(-)
+ create mode 100644 app/backend/cmd/holyarrs/fork_check_002_test.go
+ create mode 100644 app/backend/cmd/holyarrs/fork_defaults.go
+
+diff --git a/app/backend/cmd/holyarrs/fork_check_002_test.go b/app/backend/cmd/holyarrs/fork_check_002_test.go
+new file mode 100644
+index 0000000..900a7bf
+--- /dev/null
++++ b/app/backend/cmd/holyarrs/fork_check_002_test.go
+@@ -0,0 +1,78 @@
++package main
++
++// HolyArrs fork, check for patch 002 (private defaults): a fresh database
++// gets Your own keys, no install count and no autoplaying trailers; an
++// owner's own choice stays; main() seeds before it reads; the update check
++// reads the fork's releases.
++
++import (
++	"context"
++	"database/sql"
++	"os"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/HolyArrs/holyarrs/app/backend/internal/core/database"
++	"github.com/HolyArrs/holyarrs/app/backend/internal/health"
++	"github.com/HolyArrs/holyarrs/app/backend/internal/metadata"
++)
++
++func TestForkCheck002FreshDatabase(t *testing.T) {
++	ctx := context.Background()
++	st, err := database.Open(t.TempDir(), database.Options{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = st.Close() })
++	if err := forkSeedPrivate(ctx, st); err != nil {
++		t.Fatal(err)
++	}
++	if m, ok := metadata.StoredMode(ctx, st.Read()); !ok || m != metadata.ModeOwn {
++		t.Fatalf("stored mode %q %v, want own", m, ok)
++	}
++	modes := metadata.NewModes(func(string) string { return "" })
++	modes.LoadMode(ctx, st.Read())
++	if modes.Current() != metadata.ModeOwn {
++		t.Fatalf("mode in force %q, want own (the metadata server is never contacted)", modes.Current())
++	}
++	if health.CountInstall(ctx, st.Read()) {
++		t.Fatal("Count this install is on")
++	}
++	if v, _ := database.Setting(ctx, st.Read(), "this_app", "autoplay_trailers"); v != "off" {
++		t.Fatalf("autoplay trailers %q", v)
++	}
++}
++
++func TestForkCheck002OwnerChoiceKept(t *testing.T) {
++	ctx := context.Background()
++	st, err := database.Open(t.TempDir(), database.Options{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = st.Close() })
++	_ = st.Write(ctx, func(tx *sql.Tx) error {
++		return database.PutSetting(tx, "this_app", health.SettingCountryCount, "on", database.System, time.Now())
++	})
++	if err := forkSeedPrivate(ctx, st); err != nil {
++		t.Fatal(err)
++	}
++	if !health.CountInstall(ctx, st.Read()) {
++		t.Fatal("the owner's choice was overwritten")
++	}
++}
++
++func TestForkCheck002Wiring(t *testing.T) {
++	src, err := os.ReadFile("main.go")
++	if err != nil {
++		t.Fatal(err)
++	}
++	s := string(src)
++	seed, load, count := strings.Index(s, "forkHosted(ctx, s, vault)"), strings.Index(s, "hosted.Modes.LoadMode("), strings.Index(s, "health.CountInstall(")
++	if seed < 0 || load < 0 || count < 0 || seed > load || seed > count {
++		t.Fatalf("seed at %d, mode read at %d, count read at %d: the seed must come first", seed, load, count)
++	}
++	if !strings.Contains(s, `env("HOLYARRS_RELEASE_FEED", forkReleaseFeed)`) || !strings.Contains(forkReleaseFeed, "/repos/MoJagotasdfgh/HolyArrs/") {
++		t.Fatal("the update check does not read the fork's releases")
++	}
++}
+diff --git a/app/backend/cmd/holyarrs/fork_defaults.go b/app/backend/cmd/holyarrs/fork_defaults.go
+new file mode 100644
+index 0000000..7dc67ee
+--- /dev/null
++++ b/app/backend/cmd/holyarrs/fork_defaults.go
+@@ -0,0 +1,71 @@
++package main
++
++// HolyArrs fork (MoJagotasdfgh/HolyArrs), patch 002: private defaults.
++//
++// On every start, before the metadata mode and "Count this install" are
++// read, the settings this fork keeps private are written when the owner has
++// not set them yet; a choice made in Settings is never overwritten:
++//   - metadata from Your own keys: the HolyArrs metadata server is never
++//     contacted (upstream's default is the server);
++//   - "Count this install" off (the server's per-country install total);
++//   - trailers do not play by themselves, so the trailer pass stays quiet.
++// The update check reads this fork's releases instead of upstream's.
++// No migration: these are ordinary settings rows.
++
++import (
++	"context"
++	"database/sql"
++	"fmt"
++	"testing"
++	"time"
++
++	"github.com/HolyArrs/holyarrs/app/backend/internal/core/database"
++	"github.com/HolyArrs/holyarrs/app/backend/internal/health"
++	"github.com/HolyArrs/holyarrs/app/backend/internal/metadata"
++	"github.com/HolyArrs/holyarrs/app/backend/internal/core/secrets"
++)
++
++// forkReleaseFeed is where the update check looks for a newer release.
++const forkReleaseFeed = "https://api.github.com/repos/MoJagotasdfgh/HolyArrs/releases/latest"
++
++// forkPrivateSettings are the settings rows written when missing.
++var forkPrivateSettings = []struct{ grp, key, value string }{
++	{metadata.ModeGroup, metadata.ModeKey, string(metadata.ModeOwn)},
++	{"this_app", health.SettingCountryCount, "off"},
++	{"this_app", "autoplay_trailers", "off"},
++}
++
++func init() { forkPatches = append(forkPatches, "002-private-defaults") }
++
++// forkHosted writes the private defaults, then makes the metadata server
++// client as upstream does. main() calls it in place of metadata.NewHosted,
++// right before the mode and "Count this install" are read.
++func forkHosted(ctx context.Context, s *database.Store, vault *secrets.Vault) (*metadata.Hosted, error) {
++	if err := forkPrivateDefaults(ctx, s); err != nil {
++		return nil, fmt.Errorf("fork defaults: %w", err)
++	}
++	return metadata.NewHosted(vault)
++}
++
++// forkPrivateDefaults runs at start. Upstream's own tests start the server
++// too and expect upstream's defaults, so under go test it does nothing;
++// fork_check_002_test.go tests forkSeedPrivate itself.
++func forkPrivateDefaults(ctx context.Context, s *database.Store) error {
++	if testing.Testing() {
++		return nil
++	}
++	return forkSeedPrivate(ctx, s)
++}
++
++// forkSeedPrivate writes the private settings that are not set yet.
++func forkSeedPrivate(ctx context.Context, s *database.Store) error {
++	return s.Write(ctx, func(tx *sql.Tx) error {
++		now := time.Now()
++		for _, x := range forkPrivateSettings {
++			if err := database.PutSettingIfMissing(tx, x.grp, x.key, x.value, database.System, now); err != nil {
++				return err
++			}
++		}
++		return nil
++	})
++}
+diff --git a/app/backend/cmd/holyarrs/main.go b/app/backend/cmd/holyarrs/main.go
+index 83b49f7..cc87148 100644
+--- a/app/backend/cmd/holyarrs/main.go
++++ b/app/backend/cmd/holyarrs/main.go
+@@ -414,7 +414,7 @@ func serve(ctx context.Context, c config, o runOpts) error {
+ 		}
+ 		return err
+ 	})
+-	hosted, err := metadata.NewHosted(vault)
++	hosted, err := forkHosted(ctx, s, vault) // HolyArrs fork: private defaults first
+ 	if err != nil {
+ 		return fmt.Errorf("metadata server: %w", err)
+ 	}
+@@ -518,7 +518,7 @@ func serve(ctx context.Context, c config, o runOpts) error {
+ 	// network; never cloud metadata addresses). HOLYARRS_RELEASE_FEED
+ 	// points it elsewhere (tests).
+ 	uc := &updates.Checker{Store: s, Version: version}
+-	uc.ReleaseFeed = env("HOLYARRS_RELEASE_FEED", updates.DefaultReleaseFeed)
++	uc.ReleaseFeed = env("HOLYARRS_RELEASE_FEED", forkReleaseFeed) // HolyArrs fork: this fork's releases
+ 	uc.ClientFor = func(allowLocal bool) *http.Client {
+ 		allow := outbound.PublicOnly
+ 		if allowLocal {

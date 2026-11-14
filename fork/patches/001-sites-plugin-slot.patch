@@ -1,0 +1,1280 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Muhammad Jagot <MoJagotasdfgh@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 23:03:24 +0200
+Subject: [PATCH] fork 001: sites plug-in slot (the four built-in site readers
+ out)
+
+What: internal/sources/sites.go becomes an empty plug-in slot (SiteReader,
+RegisterSite); the Knaben, TorrentsCSV, SubsPlease and IPTorrents readers,
+their tests and their fixtures are removed. The add form hides the "site"
+choice while nothing is plugged in, and the messages no longer name the
+four sites. Site.NoFeed replaces the one TorrentsCSV special case.
+
+Why: this build ships no sites or trackers; the owner plugs in his own
+readers (a Go file in internal/sources that calls RegisterSite from init())
+or uses the Prowlarr/Jackett bridge. The "site" Source format, its routes
+and its stored rows stay as they are, so a reader plugged in later works
+with Sources added before.
+
+Undo: revert this one commit, or leave this patch out of fork/patches.
+
+Check: internal/sources/fork_check_001_test.go (no built-in reader, the add
+route refuses a site that is not plugged in, the slot reaches a plugged-in
+reader for caps, search, test); apply.ps1 also scans holyarrs-mod.exe for
+the four sites' addresses.
+
+Upstream files edited: internal/sources/{sites.go, sites_test.go,
+test_failed_test.go, service.go, routes_sources.go},
+frontend/src/lib/sources/api.ts, routes/settings/sources/+page.svelte, and the JSON-key snapshot
+tools/structurecheck/testdata/json-keys.txt (the readers' keys out,
+no_feed in);
+internal/sources/testdata/sites removed. No database migration.
+---
+ .../internal/sources/fork_check_001_test.go   |  76 ++++
+ .../internal/sources/routes_sources.go        |   4 +-
+ app/backend/internal/sources/service.go       |  10 +-
+ app/backend/internal/sources/sites.go         | 427 +++---------------
+ app/backend/internal/sources/sites_test.go    | 224 +--------
+ .../internal/sources/test_failed_test.go      |  13 +-
+ .../sources/testdata/sites/iptorrents.html    |   6 -
+ .../testdata/sites/iptorrents_login.html      |   1 -
+ .../sources/testdata/sites/knaben.json        |  89 ----
+ .../sources/testdata/sites/subsplease.json    |  48 --
+ .../sources/testdata/sites/torrentscsv.json   |  16 -
+ .../structurecheck/testdata/json-keys.txt     |   9 +-
+ app/frontend/src/lib/sources/api.ts           |  14 +-
+ .../src/routes/settings/sources/+page.svelte  |   4 +-
+ 14 files changed, 155 insertions(+), 786 deletions(-)
+ create mode 100644 app/backend/internal/sources/fork_check_001_test.go
+ delete mode 100644 app/backend/internal/sources/testdata/sites/iptorrents.html
+ delete mode 100644 app/backend/internal/sources/testdata/sites/iptorrents_login.html
+ delete mode 100644 app/backend/internal/sources/testdata/sites/knaben.json
+ delete mode 100644 app/backend/internal/sources/testdata/sites/subsplease.json
+ delete mode 100644 app/backend/internal/sources/testdata/sites/torrentscsv.json
+
+diff --git a/app/backend/internal/sources/fork_check_001_test.go b/app/backend/internal/sources/fork_check_001_test.go
+new file mode 100644
+index 0000000..18b1e45
+--- /dev/null
++++ b/app/backend/internal/sources/fork_check_001_test.go
+@@ -0,0 +1,76 @@
++package sources
++
++// HolyArrs fork, check for patch 001 (sites plug-in slot). It fails when an
++// upstream release brings a built-in site reader back, or when the slot no
++// longer reaches a plugged-in reader.
++
++import (
++	"context"
++	"encoding/json"
++	"testing"
++)
++
++// The four readers upstream ships are not in the build, and the list the
++// add form reads holds only what was plugged in.
++func TestForkCheck001NoBuiltInSites(t *testing.T) {
++	for _, id := range []string{"knaben", "torrentscsv", "subsplease", "iptorrents"} {
++		if _, ok := SiteByID(id); ok {
++			t.Fatalf("built-in site reader %q is back", id)
++		}
++	}
++	if len(Sites) != len(siteReaders) {
++		t.Fatalf("Sites lists %d, slot holds %d", len(Sites), len(siteReaders))
++	}
++	c := New(Config{URL: "http://127.0.0.1:1", Format: "site", Site: "knaben", Protocol: "torrent", AllowLocal: true})
++	if _, err := c.siteCaps(); err == nil {
++		t.Fatal("a site with no reader answered caps")
++	}
++}
++
++// The add route refuses a site that is not plugged in, and lists none.
++// route: GET /api/v1/sources/sites
++func TestForkCheck001AddRefused(t *testing.T) {
++	srv, _ := sourceServer(t)
++	var sites struct {
++		Sites []Site `json:"sites"`
++	}
++	_ = json.Unmarshal(do(t, "GET", srv.URL+"/api/v1/sources/sites", "", 200), &sites)
++	if len(sites.Sites) != len(Sites) {
++		t.Fatalf("route lists %d sites, slot %d", len(sites.Sites), len(Sites))
++	}
++	do(t, "POST", srv.URL+"/api/v1/sources", `{"name":"K","format":"site","site":"knaben"}`, 400)
++}
++
++// A reader plugged in through RegisterSite is reached for caps, search,
++// the test and a release file's headers.
++func TestForkCheck001SlotReachesReader(t *testing.T) {
++	const id = "fork-check-fake"
++	var seen string
++	RegisterSite(SiteReader{
++		Site: Site{ID: id, Name: "Fork Check", URL: "http://127.0.0.1:1", Kinds: []string{"movie"}, NoFeed: true},
++		Search: func(_ context.Context, _ *Client, base, text string, _ Query) ([]Item, error) {
++			seen = base + "|" + text
++			return []Item{{Title: "Fork Check 2026", Protocol: "torrent"}}, nil
++		},
++		Test: &Query{Title: "probe"},
++	})
++	t.Cleanup(func() {
++		delete(siteReaders, id)
++		Sites = Sites[:len(Sites)-1]
++	})
++	c := New(Config{URL: "http://127.0.0.1:1/", Format: "site", Site: id, Protocol: "torrent", AllowLocal: true})
++	caps, err := c.siteCaps()
++	if err != nil || !caps.MovieSearch || caps.TVSearch {
++		t.Fatalf("caps %+v %v", caps, err)
++	}
++	items, err := c.siteSearch(context.Background(), Query{Title: "Fork Check", Year: 2026}, nil)
++	if err != nil || len(items) != 1 || seen != "http://127.0.0.1:1|Fork Check 2026" {
++		t.Fatalf("search %v %v seen %q", items, err, seen)
++	}
++	if n, err := c.siteTest(context.Background()); err != nil || n != 1 || seen != "http://127.0.0.1:1|probe" {
++		t.Fatalf("test %d %v seen %q", n, err, seen)
++	}
++	if s, ok := SiteByID(id); !ok || !s.NoFeed {
++		t.Fatalf("SiteByID %+v %v", s, ok)
++	}
++}
+diff --git a/app/backend/internal/sources/routes_sources.go b/app/backend/internal/sources/routes_sources.go
+index bdf4a77..131bdcf 100644
+--- a/app/backend/internal/sources/routes_sources.go
++++ b/app/backend/internal/sources/routes_sources.go
+@@ -83,12 +83,12 @@ func (h *Handlers) listSources(w http.ResponseWriter, r *http.Request) {
+ 	webserver.WriteJSON(w, http.StatusOK, map[string]any{"sources": out})
+ }
+ 
+-// listSites lists the built-in sites a Source can read directly.
++// listSites lists the plugged-in sites a Source can read directly.
+ func (h *Handlers) listSites(w http.ResponseWriter, r *http.Request) {
+ 	webserver.WriteJSON(w, http.StatusOK, map[string]any{"sites": Sites})
+ }
+ 
+-const sourceHelp = `send name, format (torznab, newznab, rss or site; a site Source also sends site: knaben, torrentscsv, subsplease or iptorrents), url, and if needed api_key, protocol, use_for {feed, auto_search, hand_search}, kinds, categories, min_seeders, limits, priority (1 to 50), allow_local_network, proxy, proxy_password, proxy_allow_local_network`
++const sourceHelp = `send name, format (torznab, newznab, rss or site; a site Source also sends site: the id of a site reader plugged into this install), url, and if needed api_key, protocol, use_for {feed, auto_search, hand_search}, kinds, categories, min_seeders, limits, priority (1 to 50), allow_local_network, proxy, proxy_password, proxy_allow_local_network`
+ 
+ // readSource reads a Source body; the masked placeholder keeps the stored secret.
+ func readSource(w http.ResponseWriter, r *http.Request) (Input, bool) {
+diff --git a/app/backend/internal/sources/service.go b/app/backend/internal/sources/service.go
+index 70616a7..f0017b6 100644
+--- a/app/backend/internal/sources/service.go
++++ b/app/backend/internal/sources/service.go
+@@ -29,7 +29,7 @@ var (
+ 	ErrName     = errors.New("give the Source a name of 1 to 80 characters")
+ 	ErrNameUsed = errors.New("another Source has that name")
+ 	ErrFormat   = errors.New("format must be torznab, newznab, rss or site")
+-	ErrSite     = errors.New("site must be one of the built-in sites: knaben, torrentscsv, subsplease or iptorrents")
++	ErrSite     = errors.New("site must name a site reader plugged into this install (none are built in)")
+ 	ErrProtocol = errors.New("protocol must be torrent or usenet")
+ 	ErrURL      = errors.New("the address must start with http:// or https:// and name a host")
+ 	// ErrQuery matches ErrURL under errors.Is, so callers that check ErrURL treat it the same.
+@@ -59,8 +59,8 @@ var DefaultCategories = map[string][]int{"movie": {2000}, "tv": {5000}, "music":
+ type Input struct {
+ 	Name   string `json:"name"`
+ 	Format string `json:"format"`
+-	// Site names the built-in site a site-format Source reads (knaben,
+-	// torrentscsv, subsplease, iptorrents). It is set when the Source is added.
++	// Site names the plugged-in site reader a site-format Source reads
++	// (sites.go). It is set when the Source is added.
+ 	Site            string               `json:"site,omitempty"`
+ 	Protocol        string               `json:"protocol"`
+ 	URL             string               `json:"url"`
+@@ -480,8 +480,8 @@ func fill(in Input, src *domain.Source, isNew bool) (key, proxyPass string, err
+ 		src.UseFor = *in.UseFor
+ 	} else if isNew {
+ 		src.UseFor = domain.SourceUse{Feed: true, AutoSearch: src.Format != "rss", HandSearch: src.Format != "rss"}
+-		if site.ID == "torrentscsv" {
+-			// TorrentsCSV only searches; it has no newest list to watch.
++		if site.NoFeed {
++			// The site only searches; it has no newest list to watch.
+ 			src.UseFor.Feed = false
+ 		}
+ 	}
+diff --git a/app/backend/internal/sources/sites.go b/app/backend/internal/sources/sites.go
+index b27a5ec..9aea51b 100644
+--- a/app/backend/internal/sources/sites.go
++++ b/app/backend/internal/sources/sites.go
+@@ -1,15 +1,17 @@
+ package sources
+ 
++// HolyArrs fork (MoJagotasdfgh/HolyArrs), patch 001: the four built-in site
++// readers are taken out and this file is an empty plug-in slot. A site
++// reader is a Go file of the owner's in this package that calls
++// RegisterSite from init(); the fork ships none. The Source format "site",
++// its routes and its stored rows are unchanged, so a reader plugged in
++// later works with Sources added before. Undo: revert this patch's commit.
++
+ import (
+ 	"context"
+-	"encoding/json"
+ 	"fmt"
+-	htmlesc "html"
+ 	"net/http"
+-	"net/url"
+-	"regexp"
+ 	"slices"
+-	"sort"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+@@ -18,11 +20,11 @@ import (
+ 	"github.com/HolyArrs/holyarrs/app/backend/internal/core/releasename"
+ )
+ 
+-// Built-in sites: a Source with format "site" reads one of these sites
++// Site readers: a Source with format "site" reads one plugged-in site
+ // directly, with no Prowlarr or Jackett in between. Extra["site"] names it.
+ const extraSiteKind = "site"
+ 
+-// Site describes one built-in site for the add form.
++// Site describes one plugged-in site for the add form.
+ type Site struct {
+ 	ID      string `json:"id"`
+ 	Name    string `json:"name"`
+@@ -34,24 +36,47 @@ type Site struct {
+ 	GapMS     int `json:"gap_ms"`
+ 	PerHour   int `json:"per_hour"`
+ 	TimeoutMS int `json:"timeout_ms"`
++	// NoFeed means the site only searches: it has no newest list to watch.
++	NoFeed bool `json:"no_feed,omitempty"`
+ }
+ 
+-// Sites lists the built-in sites, in the order the add form shows them.
+-var Sites = []Site{
+-	{ID: "knaben", Name: "Knaben", URL: "https://api.knaben.org", Kinds: []string{"movie", "tv", "music"}, GapMS: 2000, PerHour: 100, TimeoutMS: 20000},
+-	{ID: "torrentscsv", Name: "TorrentsCSV", URL: "https://torrents-csv.com", Kinds: []string{"movie", "tv", "music"}, GapMS: 2000, PerHour: 100, TimeoutMS: 20000},
+-	{ID: "subsplease", Name: "SubsPlease", URL: "https://subsplease.org", Kinds: []string{"tv"}, GapMS: 2000, PerHour: 100, TimeoutMS: 20000},
+-	{ID: "iptorrents", Name: "IPTorrents", URL: "https://iptorrents.com", Private: true, Kinds: []string{"movie", "tv", "music"}, GapMS: 3000, PerHour: 60, TimeoutMS: 30000},
++// SiteReader is one site plugged into the slot.
++type SiteReader struct {
++	Site Site
++	// Search runs one search; text "" asks for the newest list. base is the
++	// Source's address without a trailing slash; c.send and c.wait are there
++	// for the reader's calls.
++	Search func(ctx context.Context, c *Client, base, text string, q Query) ([]Item, error)
++	// Test, when set, is the query a Source test runs; nil reads the newest list.
++	Test *Query
++	// FileHeader, when set, gives the headers the site needs to hand out a
++	// release file, from the Source's key. It is never put in a link.
++	FileHeader func(key string) http.Header
+ }
+ 
+-// SiteByID finds a built-in site.
+-func SiteByID(id string) (Site, bool) {
+-	for _, s := range Sites {
+-		if s.ID == id {
+-			return s, true
+-		}
++// Sites lists the plugged-in sites, in the order they were registered.
++// Empty as shipped.
++var Sites = []Site{}
++
++var siteReaders = map[string]SiteReader{}
++
++// RegisterSite plugs a reader into the slot. Call it from init(); an empty
++// id, a missing Search or a second reader with the same id stops the start.
++func RegisterSite(r SiteReader) {
++	if r.Site.ID == "" || r.Search == nil {
++		panic("sources: a site reader needs an id and a Search")
++	}
++	if _, dup := siteReaders[r.Site.ID]; dup {
++		panic("sources: site reader registered twice: " + r.Site.ID)
+ 	}
+-	return Site{}, false
++	siteReaders[r.Site.ID] = r
++	Sites = append(Sites, r.Site)
++}
++
++// SiteByID finds a plugged-in site.
++func SiteByID(id string) (Site, bool) {
++	r, ok := siteReaders[id]
++	return r.Site, ok
+ }
+ 
+ func (c *Client) siteCaps() (Caps, error) {
+@@ -119,222 +144,11 @@ func (c *Client) siteSearch(ctx context.Context, q Query, observer func(string,
+ }
+ 
+ func (c *Client) siteCall(ctx context.Context, base, text string, q Query) ([]Item, error) {
+-	switch c.cfg.Site {
+-	case "knaben":
+-		body := map[string]any{"search_type": "100%", "search_field": "title", "query": text, "size": 100,
+-			"hide_unsafe": true, "hide_xxx": true, "order_by": "seeders", "order_direction": "desc"}
+-		if text == "" {
+-			body["order_by"] = "date"
+-			delete(body, "search_field")
+-			delete(body, "query")
+-		}
+-		if cats := knabenCategories(q); len(cats) > 0 {
+-			body["categories"] = cats
+-		}
+-		payload, _ := json.Marshal(body)
+-		raw, err := c.send(ctx, http.MethodPost, base+"/v1", payload, http.Header{"Content-Type": {"application/json"}})
+-		if err != nil {
+-			return nil, err
+-		}
+-		return parseKnaben(raw)
+-	case "torrentscsv":
+-		if text == "" {
+-			// The site has no newest list; it only searches.
+-			return nil, nil
+-		}
+-		raw, err := c.send(ctx, http.MethodGet, base+"/service/search?"+url.Values{"q": {text}, "size": {"100"}}.Encode(), nil, nil)
+-		if err != nil {
+-			return nil, err
+-		}
+-		return parseTorrentsCSV(raw)
+-	case "subsplease":
+-		v := url.Values{"tz": {"UTC"}}
+-		if text == "" {
+-			v.Set("f", "latest")
+-		} else {
+-			// The site names episodes "Show - 05" and knows no S01E05, so search the title alone.
+-			v.Set("f", "search")
+-			v.Set("s", textQuery(Query{Title: q.Title}))
+-		}
+-		raw, err := c.send(ctx, http.MethodGet, base+"/api/?"+v.Encode(), nil, nil)
+-		if err != nil {
+-			return nil, err
+-		}
+-		return parseSubsPlease(raw)
+-	case "iptorrents":
+-		k := iptKeys(c.cfg.APIKey)
+-		if k.cookie() == "" && (k.uid == "" || k.passkey == "") {
+-			return nil, &Error{Kind: KindLoginRefused, Msg: "IPTorrents needs your cookie (uid and pass) or your RSS key (u and tp)"}
+-		}
+-		if k.cookie() == "" {
+-			// Key only: the site's own RSS search.
+-			addr := base + "/t.rss?u=" + url.QueryEscape(k.uid) + ";tp=" + url.QueryEscape(k.passkey) + ";download"
+-			if text != "" {
+-				addr += ";q=" + url.QueryEscape(text)
+-			}
+-			raw, err := c.send(ctx, http.MethodGet, addr, nil, nil)
+-			if err != nil {
+-				return nil, err
+-			}
+-			items, err := parseItems(raw, "torrent")
+-			for i := range items {
+-				items[i].Size = iptSize(items[i].Size, items[i].GUID)
+-			}
+-			return items, err
+-		}
+-		v := url.Values{"o": {"seeders"}}
+-		if text != "" {
+-			v.Set("q", text)
+-		} else {
+-			v.Set("o", "time")
+-		}
+-		raw, err := c.send(ctx, http.MethodGet, base+"/t?"+v.Encode(), nil, http.Header{"Cookie": {k.cookie()}})
+-		if err != nil {
+-			return nil, err
+-		}
+-		return parseIPTorrents(raw, base, k.passkey)
+-	}
+-	return nil, &Error{Kind: KindBroken, Msg: "unknown built-in site"}
+-}
+-
+-// knabenCategories maps the query's media type to Knaben's top categories.
+-func knabenCategories(q Query) []int {
+-	switch {
+-	case q.feed:
+-		return nil
+-	case q.Music:
+-		return []int{1000000}
+-	case q.TV:
+-		return []int{2000000}
+-	default:
+-		return []int{3000000}
+-	}
+-}
+-
+-func intPtr(n int) *int { return &n }
+-
+-func parseKnaben(raw []byte) ([]Item, error) {
+-	var x struct {
+-		Hits []struct {
+-			Title    string `json:"title"`
+-			Bytes    int64  `json:"bytes"`
+-			Seeders  int    `json:"seeders"`
+-			Peers    int    `json:"peers"`
+-			Hash     string `json:"hash"`
+-			Magnet   string `json:"magnetUrl"`
+-			Link     string `json:"link"`
+-			Details  string `json:"details"`
+-			ID       string `json:"id"`
+-			Date     string `json:"date"`
+-			Category string `json:"category"`
+-		} `json:"hits"`
+-	}
+-	if err := json.Unmarshal(raw, &x); err != nil {
+-		return nil, &Error{Kind: KindBroken, Msg: "Knaben answered with something that is not its search list"}
+-	}
+-	out := make([]Item, 0, len(x.Hits))
+-	for _, h := range x.Hits {
+-		it := Item{Title: strings.TrimSpace(h.Title), GUID: h.ID, Link: h.Magnet, Size: h.Bytes, Protocol: "torrent",
+-			Seeders: intPtr(h.Seeders), Peers: intPtr(h.Seeders + h.Peers)}
+-		if it.Link == "" {
+-			it.Link = h.Link
+-		}
+-		if it.GUID == "" {
+-			it.GUID = h.Details
+-		}
+-		if hash := strings.ToLower(strings.TrimSpace(h.Hash)); releasename.ValidInfoHash(hash) {
+-			it.InfoHash = hash
+-		}
+-		if t, err := time.Parse(time.RFC3339, h.Date); err == nil {
+-			it.Published = t.UTC()
+-		}
+-		if it.Title != "" && it.Link != "" {
+-			out = append(out, it)
+-		}
+-	}
+-	return out, nil
+-}
+-
+-func parseTorrentsCSV(raw []byte) ([]Item, error) {
+-	var x struct {
+-		Torrents []struct {
+-			Hash     string `json:"infohash"`
+-			Name     string `json:"name"`
+-			Size     int64  `json:"size_bytes"`
+-			Created  int64  `json:"created_unix"`
+-			Seeders  int    `json:"seeders"`
+-			Leechers int    `json:"leechers"`
+-		} `json:"torrents"`
+-	}
+-	if err := json.Unmarshal(raw, &x); err != nil {
+-		return nil, &Error{Kind: KindBroken, Msg: "TorrentsCSV answered with something that is not its search list"}
+-	}
+-	out := make([]Item, 0, len(x.Torrents))
+-	for _, t := range x.Torrents {
+-		hash := strings.ToLower(strings.TrimSpace(t.Hash))
+-		name := strings.TrimSpace(t.Name)
+-		if !releasename.ValidInfoHash(hash) || name == "" {
+-			continue
+-		}
+-		it := Item{Title: name, GUID: hash, InfoHash: hash, Size: t.Size, Protocol: "torrent",
+-			Link:    "magnet:?xt=urn:btih:" + hash + "&dn=" + url.QueryEscape(name),
+-			Seeders: intPtr(t.Seeders), Peers: intPtr(t.Seeders + t.Leechers)}
+-		if t.Created > 0 {
+-			it.Published = time.Unix(t.Created, 0).UTC()
+-		}
+-		out = append(out, it)
+-	}
+-	return out, nil
+-}
+-
+-func parseSubsPlease(raw []byte) ([]Item, error) {
+-	// An empty search answers with an empty list rather than an object.
+-	if s := strings.TrimSpace(string(raw)); s == "[]" || s == "" {
+-		return nil, nil
+-	}
+-	var x map[string]struct {
+-		Release   string `json:"release_date"`
+-		Show      string `json:"show"`
+-		Episode   string `json:"episode"`
+-		Downloads []struct {
+-			Res    string `json:"res"`
+-			Magnet string `json:"magnet"`
+-		} `json:"downloads"`
+-	}
+-	if err := json.Unmarshal(raw, &x); err != nil {
+-		return nil, &Error{Kind: KindBroken, Msg: "SubsPlease answered with something that is not its release list"}
+-	}
+-	keys := make([]string, 0, len(x))
+-	for k := range x {
+-		keys = append(keys, k)
+-	}
+-	sort.Strings(keys)
+-	var out []Item
+-	for _, k := range keys {
+-		e := x[k]
+-		var when time.Time
+-		if t, err := time.Parse(time.RFC1123Z, e.Release); err == nil {
+-			when = t.UTC()
+-		}
+-		for _, d := range e.Downloads {
+-			m, err := url.Parse(d.Magnet)
+-			if err != nil || m.Scheme != "magnet" {
+-				continue
+-			}
+-			mq := m.Query()
+-			name := strings.TrimSpace(mq.Get("dn"))
+-			if name == "" {
+-				name = fmt.Sprintf("[SubsPlease] %s - %s (%sp)", e.Show, e.Episode, d.Res)
+-			}
+-			it := Item{Title: name, GUID: d.Magnet, Link: d.Magnet, Protocol: "torrent", Published: when}
+-			it.Size, _ = strconv.ParseInt(mq.Get("xl"), 10, 64)
+-			if h := magnetHash(mq.Get("xt")); h != "" {
+-				it.InfoHash = h
+-			}
+-			out = append(out, it)
+-		}
++	r, ok := siteReaders[c.cfg.Site]
++	if !ok {
++		return nil, &Error{Kind: KindBroken, Msg: "unknown built-in site"}
+ 	}
+-	return out, nil
++	return r.Search(ctx, c, base, text, q)
+ }
+ 
+ // magnetHash reads the info hash of a magnet's xt, in hex or base32.
+@@ -368,155 +182,30 @@ func magnetHash(xt string) string {
+ 	return ""
+ }
+ 
+-// iptKey is what a person gives for IPTorrents: their cookie (uid and pass,
+-// plus anything else the site set) and, optionally, their RSS key (u and tp),
+-// in one line such as "uid=1; pass=abc; tp=def".
+-type iptKey struct {
+-	pairs   [][2]string
+-	uid     string
+-	passkey string
+-}
+-
+-func iptKeys(raw string) iptKey {
+-	var k iptKey
+-	for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ';' || r == '&' || r == '\n' }) {
+-		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+-		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
+-		if !ok || name == "" || value == "" {
+-			continue
+-		}
+-		switch strings.ToLower(name) {
+-		case "tp", "torrent_pass", "passkey":
+-			k.passkey = value
+-		case "u":
+-			k.uid = value
+-		default:
+-			if strings.EqualFold(name, "uid") && k.uid == "" {
+-				k.uid = value
+-			}
+-			k.pairs = append(k.pairs, [2]string{name, value})
+-		}
+-	}
+-	return k
+-}
+-
+-// cookie is the Cookie header, empty when no pass was given.
+-func (k iptKey) cookie() string {
+-	has := false
+-	parts := make([]string, 0, len(k.pairs))
+-	for _, p := range k.pairs {
+-		if strings.EqualFold(p[0], "pass") {
+-			has = true
+-		}
+-		parts = append(parts, p[0]+"="+p[1])
+-	}
+-	if !has {
+-		return ""
+-	}
+-	return strings.Join(parts, "; ")
+-}
+-
+-var (
+-	iptRow     = regexp.MustCompile(`(?is)<tr[^>]*>(.*?)</tr>`)
+-	iptTitle   = regexp.MustCompile(`(?is)<a[^>]+href="(/details\.php\?id=(\d+))"[^>]*>(.*?)</a>`)
+-	iptDL      = regexp.MustCompile(`(?is)href="(/download\.php/[^"]+\.torrent)"`)
+-	iptCell    = regexp.MustCompile(`(?is)<td[^>]*>(.*?)</td>`)
+-	iptTags    = regexp.MustCompile(`(?s)<[^>]+>`)
+-	iptSizeRe  = regexp.MustCompile(`(?i)([\d.,]+)\s*([KMGT]i?B)`)
+-	iptSeeders = regexp.MustCompile(`(?is)class="[^"]*t_seeders[^"]*"[^>]*>\s*([\d,]+)`)
+-	iptLeech   = regexp.MustCompile(`(?is)class="[^"]*t_leechers[^"]*"[^>]*>\s*([\d,]+)`)
+-)
+-
+-func cellText(s string) string {
+-	return strings.TrimSpace(htmlesc.UnescapeString(iptTags.ReplaceAllString(s, " ")))
+-}
+-
+-// parseSize reads "1.4 GB" style sizes.
+-func parseSize(s string) int64 {
+-	m := iptSizeRe.FindStringSubmatch(s)
+-	if m == nil {
+-		return 0
+-	}
+-	f, err := strconv.ParseFloat(strings.ReplaceAll(m[1], ",", ""), 64)
+-	if err != nil {
+-		return 0
+-	}
+-	mult := map[byte]float64{'K': 1 << 10, 'M': 1 << 20, 'G': 1 << 30, 'T': 1 << 40}[strings.ToUpper(m[2])[0]]
+-	return int64(f * mult)
+-}
+-
+-// iptSize keeps a size the RSS gave, or reads it from the item's text.
+-func iptSize(size int64, text string) int64 {
+-	if size > 0 {
+-		return size
+-	}
+-	return parseSize(text)
+-}
+-
+-// parseIPTorrents reads the site's search page. Download links get the
+-// person's passkey when they gave one, so a Downloader can fetch them with no cookie.
+-func parseIPTorrents(raw []byte, base, passkey string) ([]Item, error) {
+-	page := string(raw)
+-	if strings.Contains(page, `name="password"`) || strings.Contains(strings.ToLower(page), "login.php") && !strings.Contains(page, "t_seeders") {
+-		return nil, &Error{Kind: KindLoginRefused, Msg: "IPTorrents shows its sign-in page; copy a fresh cookie from your browser"}
+-	}
+-	var out []Item
+-	for _, row := range iptRow.FindAllStringSubmatch(page, -1) {
+-		r := row[1]
+-		t := iptTitle.FindStringSubmatch(r)
+-		d := iptDL.FindStringSubmatch(r)
+-		if t == nil || d == nil {
+-			continue
+-		}
+-		it := Item{Title: cellText(t[3]), GUID: base + t[1], Link: base + d[1], Protocol: "torrent"}
+-		if passkey != "" {
+-			it.Link += "?torrent_pass=" + url.QueryEscape(passkey)
+-		}
+-		for _, c := range iptCell.FindAllStringSubmatch(r, -1) {
+-			if n := parseSize(cellText(c[1])); n > 0 && it.Size == 0 && !strings.Contains(c[1], "details.php") {
+-				it.Size = n
+-			}
+-		}
+-		if m := iptSeeders.FindStringSubmatch(r); m != nil {
+-			n, _ := strconv.Atoi(strings.ReplaceAll(m[1], ",", ""))
+-			it.Seeders = intPtr(n)
+-			if l := iptLeech.FindStringSubmatch(r); l != nil {
+-				p, _ := strconv.Atoi(strings.ReplaceAll(l[1], ",", ""))
+-				it.Peers = intPtr(n + p)
+-			}
+-		}
+-		if it.Title != "" {
+-			out = append(out, it)
+-		}
+-	}
+-	return out, nil
+-}
+-
+-// siteTest reads the site's newest list; TorrentsCSV has none, so it runs one small search.
++// siteTest reads the site's newest list, or runs the reader's own test query.
+ func (c *Client) siteTest(ctx context.Context) (int, error) {
+ 	q := Query{feed: true}
+-	if c.cfg.Site == "torrentscsv" {
+-		q = Query{Title: "linux"}
++	if r, ok := siteReaders[c.cfg.Site]; ok && r.Test != nil {
++		q = *r.Test
+ 	}
+ 	items, err := c.siteSearch(ctx, q, c.cfg.Observe)
+ 	return len(items), err
+ }
+ 
+ // FileHeader gives the headers src's own site needs to hand out a Release
+-// file: the IPTorrents sign-in cookie. Download links from a cookie-only
+-// search carry no passkey, so the Downloader could not fetch them; HolyArrs
+-// fetches the file with this cookie and sends the file instead. Nil for
+-// every other Source, and the cookie is never put in a link.
++// file, when its reader has any (a sign-in cookie, say). Nil for every other
++// Source, and the header is never put in a link.
+ func FileHeader(ctx context.Context, src domain.Source, sec SecretReader) (http.Header, error) {
+-	if src.Extra[extraSiteKind] != "iptorrents" {
++	r, ok := siteReaders[src.Extra[extraSiteKind]]
++	if !ok || r.FileHeader == nil || src.Format != "site" {
+ 		return nil, nil
+ 	}
+ 	cfg, err := ConfigFor(ctx, src, sec)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	if c := iptKeys(cfg.APIKey).cookie(); c != "" {
+-		return http.Header{"Cookie": {c}}, nil
++	if h := r.FileHeader(cfg.APIKey); len(h) > 0 {
++		return h, nil
+ 	}
+ 	return nil, nil
+ }
+diff --git a/app/backend/internal/sources/sites_test.go b/app/backend/internal/sources/sites_test.go
+index 2a5bc78..668fdfc 100644
+--- a/app/backend/internal/sources/sites_test.go
++++ b/app/backend/internal/sources/sites_test.go
+@@ -1,38 +1,9 @@
+ package sources
+ 
+-import (
+-	"context"
+-	"encoding/json"
+-	"errors"
+-	"io"
+-	"net/http"
+-	"net/http/httptest"
+-	"os"
+-	"strings"
+-	"testing"
++import "testing"
+ 
+-	domain "github.com/HolyArrs/holyarrs/app/backend/internal/core/model"
+-)
+-
+-// siteServer serves one saved fixture and records each request.
+-func siteServer(t *testing.T, fixture string, check func(r *http.Request, body string)) *httptest.Server {
+-	t.Helper()
+-	data, err := os.ReadFile("testdata/sites/" + fixture)
+-	if err != nil {
+-		t.Fatal(err)
+-	}
+-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+-		b, _ := io.ReadAll(r.Body)
+-		check(r, string(b))
+-		_, _ = w.Write(data)
+-	}))
+-	t.Cleanup(srv.Close)
+-	return srv
+-}
+-
+-func siteClient(url, site, key string) *Client {
+-	return New(Config{URL: url, Format: "site", Site: site, Protocol: "torrent", AllowLocal: true, APIKey: key})
+-}
++// HolyArrs fork, patch 001: the tests of the four built-in site readers left
++// with the readers; the slot's own check is fork_check_001_test.go.
+ 
+ func TestSiteText(t *testing.T) {
+ 	t.Parallel()
+@@ -54,140 +25,6 @@ func TestSiteText(t *testing.T) {
+ 	}
+ }
+ 
+-func TestKnabenSearch(t *testing.T) {
+-	t.Parallel()
+-	srv := siteServer(t, "knaben.json", func(r *http.Request, body string) {
+-		var b map[string]any
+-		_ = json.Unmarshal([]byte(body), &b)
+-		if r.Method != http.MethodPost || r.URL.Path != "/v1" || b["query"] != "Big Buck Bunny 2008" || r.Header.Get("Content-Type") != "application/json" {
+-			t.Errorf("request %s %s %s", r.Method, r.URL.Path, body)
+-		}
+-		if cats, _ := b["categories"].([]any); len(cats) != 1 || cats[0] != float64(3000000) {
+-			t.Errorf("categories %v", b["categories"])
+-		}
+-	})
+-	items, err := siteClient(srv.URL, "knaben", "").Search(context.Background(), Query{Title: "Big Buck Bunny", Year: 2008})
+-	if err != nil || len(items) != 3 {
+-		t.Fatalf("items %d err %v", len(items), err)
+-	}
+-	it := items[0]
+-	if it.Title != "Big Buck Bunny (2008) 720p Bluray nHD x264-NhaNc3" || it.Size != 219538056 || it.Seeders == nil ||
+-		!strings.HasPrefix(it.Link, "magnet:") || it.InfoHash != "a9df29de659e590a8ad3cb084407be38ec2ce4f2" || it.Published.IsZero() {
+-		t.Fatalf("item %+v", it)
+-	}
+-}
+-
+-func TestTorrentsCSVSearch(t *testing.T) {
+-	t.Parallel()
+-	var calls int
+-	srv := siteServer(t, "torrentscsv.json", func(r *http.Request, _ string) {
+-		calls++
+-		if q := r.URL.Query().Get("q"); r.URL.Path != "/service/search" || q != "Show S01E02" && q != "linux" {
+-			t.Errorf("request %s", r.URL)
+-		}
+-	})
+-	c := siteClient(srv.URL, "torrentscsv", "")
+-	items, err := c.Search(context.Background(), Query{Title: "Show", TV: true, Season: 1, Episode: "2"})
+-	if err != nil || len(items) != 1 {
+-		t.Fatalf("items %v err %v", items, err)
+-	}
+-	it := items[0]
+-	if it.InfoHash != "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c" || *it.Seeders != 348 || *it.Peers != 403 || it.Size != 276445467 ||
+-		!strings.HasPrefix(it.Link, "magnet:?xt=urn:btih:dd8255") {
+-		t.Fatalf("item %+v", it)
+-	}
+-	// The site has no newest list, so the feed is empty and makes no call.
+-	if feed, err := c.Feed(context.Background(), nil); err != nil || len(feed) != 0 {
+-		t.Fatalf("feed %v %v", feed, err)
+-	}
+-	if n, err := c.Test(context.Background()); err != nil || n != 1 || calls != 2 {
+-		t.Fatalf("test %d %v calls %d", n, err, calls)
+-	}
+-}
+-
+-func TestSubsPleaseSearch(t *testing.T) {
+-	t.Parallel()
+-	var seen []string
+-	srv := siteServer(t, "subsplease.json", func(r *http.Request, _ string) { seen = append(seen, r.URL.RawQuery) })
+-	c := siteClient(srv.URL, "subsplease", "")
+-	items, err := c.Search(context.Background(), Query{Title: "Sousou no Frieren", TV: true, Season: 1, Episode: "11"})
+-	if err != nil || len(items) == 0 {
+-		t.Fatalf("items %v err %v", items, err)
+-	}
+-	for _, it := range items {
+-		if !strings.HasPrefix(it.Title, "[SubsPlease]") || len(it.InfoHash) != 40 || it.Size <= 0 || it.Published.IsZero() {
+-			t.Fatalf("item %+v", it)
+-		}
+-	}
+-	if _, err := c.Feed(context.Background(), nil); err != nil {
+-		t.Fatal(err)
+-	}
+-	if len(seen) != 2 || !strings.Contains(seen[0], "f=search") || !strings.Contains(seen[0], "s=Sousou+no+Frieren") || !strings.Contains(seen[1], "f=latest") {
+-		t.Fatalf("calls %v", seen)
+-	}
+-	if got, _ := parseSubsPlease([]byte("[]")); len(got) != 0 {
+-		t.Fatal("empty answer")
+-	}
+-}
+-
+-func TestIPTorrentsCookieSearch(t *testing.T) {
+-	t.Parallel()
+-	srv := siteServer(t, "iptorrents.html", func(r *http.Request, _ string) {
+-		if r.URL.Path != "/t" || r.URL.Query().Get("q") != "Sample Show S01E02" || r.Header.Get("Cookie") != "uid=1234; pass=cookiepass" {
+-			t.Errorf("request %s cookie %q", r.URL, r.Header.Get("Cookie"))
+-		}
+-	})
+-	c := siteClient(srv.URL, "iptorrents", "uid=1234; pass=cookiepass; tp=passkey99")
+-	items, err := c.Search(context.Background(), Query{Title: "Sample Show", TV: true, Season: 1, Episode: "2"})
+-	if err != nil || len(items) != 2 {
+-		t.Fatalf("items %v err %v", items, err)
+-	}
+-	a, b := items[0], items[1]
+-	if a.Title != "Sample Show S01E02 1080p WEB h264-GROUP" || *a.Seeders != 1204 || *a.Peers != 1241 || a.Size < 1500000000 || a.Size > 1600000000 ||
+-		a.Link != srv.URL+"/download.php/1001/Sample.Show.S01E02.1080p.WEB.h264-GROUP.torrent?torrent_pass=passkey99" {
+-		t.Fatalf("first %+v", a)
+-	}
+-	if b.Title != "Sample Film 2008 720p BluRay x264-OTHER & Co" || *b.Seeders != 9 || b.Size != 812<<20 {
+-		t.Fatalf("second %+v", b)
+-	}
+-	// Stored links never keep the passkey.
+-	if l := hideKeys(a.Link, secretValues(c.cfg)); strings.Contains(l, "passkey99") || !strings.Contains(l, hidden) {
+-		t.Fatalf("hidden link %s", l)
+-	}
+-}
+-
+-func TestIPTorrentsSignInPage(t *testing.T) {
+-	t.Parallel()
+-	srv := siteServer(t, "iptorrents_login.html", func(*http.Request, string) {})
+-	_, err := siteClient(srv.URL, "iptorrents", "uid=1; pass=old").Search(context.Background(), Query{Title: "x"})
+-	var se *Error
+-	if !errors.As(err, &se) || se.Kind != KindLoginRefused {
+-		t.Fatalf("err %v", err)
+-	}
+-	// No key at all fails before any call.
+-	_, err = siteClient(srv.URL, "iptorrents", "").Search(context.Background(), Query{Title: "x"})
+-	if !errors.As(err, &se) || se.Kind != KindLoginRefused {
+-		t.Fatalf("err %v", err)
+-	}
+-}
+-
+-func TestIPTorrentsRSSKey(t *testing.T) {
+-	t.Parallel()
+-	rss := `<rss><channel><item><title>Sample Show S01E02 720p</title><link>https://example.invalid/download.php/5/x.torrent</link>` +
+-		`<guid>https://example.invalid/details.php?id=5</guid><description>1.2 GB; TV/x264</description></item></channel></rss>`
+-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+-		if r.URL.Path != "/t.rss" || !strings.Contains(r.URL.RawQuery, "u=77;tp=rsskey1;download;q=Sample") {
+-			t.Errorf("request %s", r.URL)
+-		}
+-		_, _ = w.Write([]byte(rss))
+-	}))
+-	t.Cleanup(srv.Close)
+-	items, err := siteClient(srv.URL, "iptorrents", "u=77; tp=rsskey1").Search(context.Background(), Query{Title: "Sample"})
+-	if err != nil || len(items) != 1 || items[0].Protocol != "torrent" {
+-		t.Fatalf("items %v err %v", items, err)
+-	}
+-}
+-
+ func TestMagnetHashBase32(t *testing.T) {
+ 	t.Parallel()
+ 	if got := magnetHash("urn:btih:VLJ3XGIWPFSZPFC3WRVIL2UCEQFHAW2B"); len(got) != 40 {
+@@ -197,58 +34,3 @@ func TestMagnetHashBase32(t *testing.T) {
+ 		t.Fatalf("hash %q", got)
+ 	}
+ }
+-
+-// route: GET /api/v1/sources/sites
+-func TestSiteSourceAdd(t *testing.T) {
+-	t.Parallel()
+-	srv, _ := sourceServer(t)
+-	var sites struct {
+-		Sites []Site `json:"sites"`
+-	}
+-	_ = json.Unmarshal(do(t, "GET", srv.URL+"/api/v1/sources/sites", "", 200), &sites)
+-	if len(sites.Sites) != 4 {
+-		t.Fatalf("sites %+v", sites)
+-	}
+-	var x SourceView
+-	_ = json.Unmarshal(do(t, "POST", srv.URL+"/api/v1/sources", `{"name":"Knaben","format":"site","site":"knaben"}`, 201), &x)
+-	if x.Format != "site" || x.Site != "knaben" || x.Protocol != "torrent" || x.URL != "https://api.knaben.org" ||
+-		x.Limits.GapMS != 2000 || x.Limits.SearchesPerWindow != 100 || !x.UseFor.AutoSearch {
+-		t.Fatalf("added %+v", x)
+-	}
+-	_ = json.Unmarshal(do(t, "POST", srv.URL+"/api/v1/sources", `{"name":"SP","format":"site","site":"subsplease"}`, 201), &x)
+-	if len(x.Kinds) != 1 || x.Kinds[0] != "tv" {
+-		t.Fatalf("subsplease kinds %v", x.Kinds)
+-	}
+-	_ = json.Unmarshal(do(t, "POST", srv.URL+"/api/v1/sources", `{"name":"TCSV","format":"site","site":"torrentscsv"}`, 201), &x)
+-	if x.UseFor.Feed || !x.UseFor.AutoSearch || !x.UseFor.HandSearch {
+-		t.Fatalf("torrentscsv use_for %+v", x.UseFor)
+-	}
+-	do(t, "POST", srv.URL+"/api/v1/sources", `{"name":"Nope","format":"site","site":"other"}`, 400)
+-	do(t, "POST", srv.URL+"/api/v1/sources", `{"name":"Nope","format":"site","site":"knaben","protocol":"usenet"}`, 400)
+-	raw := string(do(t, "POST", srv.URL+"/api/v1/sources", `{"name":"IPT","format":"site","site":"iptorrents","api_key":"uid=1; pass=secretcookie"}`, 201))
+-	if strings.Contains(raw, "secretcookie") {
+-		t.Fatalf("key shown %s", raw)
+-	}
+-}
+-
+-type oneSecret string
+-
+-func (s oneSecret) Get(context.Context, int64) (string, error) { return string(s), nil }
+-
+-// FileHeader gives the IPTorrents cookie (without the RSS key) for fetching
+-// a Release file, and nothing for other Sources or a key-only IPTorrents.
+-func TestFileHeaderIPTorrentsCookie(t *testing.T) {
+-	ref := int64(1)
+-	ipt := domain.Source{URL: "https://iptorrents.com", Format: "site", Extra: map[string]string{"site": "iptorrents"}, SecretRef: &ref}
+-	h, err := FileHeader(context.Background(), ipt, oneSecret("uid=1234; pass=cookiepass; tp=passkey99"))
+-	if err != nil || h.Get("Cookie") != "uid=1234; pass=cookiepass" {
+-		t.Fatalf("cookie %q, %v", h.Get("Cookie"), err)
+-	}
+-	if h, _ := FileHeader(context.Background(), ipt, oneSecret("u=1234; tp=passkey99")); h != nil {
+-		t.Fatalf("key only: %v", h)
+-	}
+-	knaben := domain.Source{URL: "https://knaben.org", Format: "site", Extra: map[string]string{"site": "knaben"}, SecretRef: &ref}
+-	if h, _ := FileHeader(context.Background(), knaben, oneSecret("uid=1; pass=x")); h != nil {
+-		t.Fatalf("knaben: %v", h)
+-	}
+-}
+diff --git a/app/backend/internal/sources/test_failed_test.go b/app/backend/internal/sources/test_failed_test.go
+index c071c6c..87d77ba 100644
+--- a/app/backend/internal/sources/test_failed_test.go
++++ b/app/backend/internal/sources/test_failed_test.go
+@@ -5,7 +5,6 @@ import (
+ 	"fmt"
+ 	"net/http"
+ 	"net/http/httptest"
+-	"os"
+ 	"sync/atomic"
+ 	"testing"
+ )
+@@ -28,17 +27,11 @@ func listedHealth(t *testing.T, base string, id int64) Health {
+ }
+ 
+ // A failed test of an enabled Source shows as failed after a reload too,
+-// for a built-in site and an ordinary Source alike, and a later working
+-// test shows it working again.
++// and a later working test shows it working again. (HolyArrs fork, patch
++// 001: the built-in site cases left with the site readers.)
+ // route: POST /api/v1/sources/{id}/test
+ func TestFailedTestKeepsShowingAfterReload(t *testing.T) {
+ 	t.Parallel()
+-	login, err := os.ReadFile("testdata/sites/iptorrents_login.html")
+-	if err != nil {
+-		t.Fatal(err)
+-	}
+-	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(login) }))
+-	t.Cleanup(site.Close)
+ 	var up atomic.Bool
+ 	idx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 		if !up.Load() {
+@@ -66,8 +59,6 @@ func TestFailedTestKeepsShowingAfterReload(t *testing.T) {
+ 	cases := []struct {
+ 		name, body, state string
+ 	}{
+-		{"no cookie", `{"name":"IPT","format":"site","site":"iptorrents","url":"` + site.URL + `","allow_local_network":true}`, StateAuthFailed},
+-		{"junk cookie", `{"name":"IPT2","format":"site","site":"iptorrents","url":"` + site.URL + `","api_key":"uid=1; pass=x","allow_local_network":true}`, StateAuthFailed},
+ 		{"ordinary", `{"name":"Lab","format":"torznab","url":"` + idx.URL + `/api","api_key":"k","allow_local_network":true}`, StateUnreachable},
+ 	}
+ 	ids := map[string]int64{}
+diff --git a/app/backend/internal/sources/testdata/sites/iptorrents.html b/app/backend/internal/sources/testdata/sites/iptorrents.html
+deleted file mode 100644
+index 2539b46..0000000
+--- a/app/backend/internal/sources/testdata/sites/iptorrents.html
++++ /dev/null
+@@ -1,6 +0,0 @@
+-<!-- Hand-made sample in the shape of the site's search table (no real account used). -->
+-<html><body><table id="torrents">
+-<tr><th>Type</th><th>Name</th><th>DL</th><th>Size</th><th>Seeders</th><th>Leechers</th></tr>
+-<tr><td><img alt="TV/x265"></td><td class="al"><a class=" hv" href="/details.php?id=1001">Sample Show S01E02 1080p WEB h264-GROUP</a><div class="sub">2 hours ago</div></td><td><a href="/download.php/1001/Sample.Show.S01E02.1080p.WEB.h264-GROUP.torrent"><i></i></a></td><td>1.46 GB</td><td class="ac t_seeders">1,204</td><td class="ac t_leechers">37</td></tr>
+-<tr><td><img alt="Movie/HD"></td><td class="al"><a class=" hv" href="/details.php?id=1002">Sample Film 2008 720p BluRay x264-OTHER &amp; Co</a></td><td><a href="/download.php/1002/Sample.Film.2008.720p.torrent"></a></td><td>812 MB</td><td class="ac t_seeders">9</td><td class="ac t_leechers">0</td></tr>
+-</table></body></html>
+diff --git a/app/backend/internal/sources/testdata/sites/iptorrents_login.html b/app/backend/internal/sources/testdata/sites/iptorrents_login.html
+deleted file mode 100644
+index 125ac19..0000000
+--- a/app/backend/internal/sources/testdata/sites/iptorrents_login.html
++++ /dev/null
+@@ -1 +0,0 @@
+-<html><body><form action="/take_login.php" method="post"><input name="username"><input type="password" name="password"></form></body></html>
+diff --git a/app/backend/internal/sources/testdata/sites/knaben.json b/app/backend/internal/sources/testdata/sites/knaben.json
+deleted file mode 100644
+index 5b1fc5d..0000000
+--- a/app/backend/internal/sources/testdata/sites/knaben.json
++++ /dev/null
+@@ -1,89 +0,0 @@
+-{
+- "hits": [
+-  {
+-   "bytes": 219538056,
+-   "cachedOrigin": "The Pirate Bay",
+-   "category": "Movies / HD",
+-   "categoryId": [
+-    3001000,
+-    3000000
+-   ],
+-   "date": "2010-11-22T13:40:22+00:00",
+-   "description": "Uploader: Nishant88<br>Big Buck Bunny (2008) 720p Bluray nHD x264-NhaNc3",
+-   "details": "https://knaben.xyz/thepiratebay/description.php?id=5975688",
+-   "grabs": 0,
+-   "hash": "A9DF29DE659E590A8AD3CB084407BE38EC2CE4F2",
+-   "id": "ec45d3a9f5dc469ce93269406b5dc5e43fb625fa",
+-   "lastSeen": "2026-11-12T02:27:21+00:00",
+-   "link": "https://knaben.org/live/dl/1337x/?path=Q2ZESjhGaTFHbWZwaklOTmtUTDJzcF9peVdMSWhuNUtnZ0ZOeHJDdVZCMGg2ZzZoSWUyem5wWXFHZXJYT0Q3RHIwaDFSNlpNaElYd3JLcExfMXFtYzFuaTZUclVIa1VFdG1KUy1qRk1sSkRwTE5PMjdPSDBQa1J0SjRkdzQzb2ExVzN6cXRtTjFGTWoteDE2ZUJjaFVNSDJrR3JsRWhfMTN2eC1SOVhQVjNVdTVHaGJpZ3E3cF9fMlVLN2p5WGpKbmVISW8tZDZlSUVFM2NTTTlLS2p0Y1pqcUxJaWJ4ckxEUzFwUlc1VVJQMDNOTF9m&file=Big+Buck+Bunny+(2008)+720p+Bluray+nHD+x264-NhaNc3&knabensource=https%3A%2F%2Fthepiratebay.org%2Fdescription.php%3Fid%3D5975688",
+-   "livePeers": 33,
+-   "liveSeeders": 0,
+-   "magnetUrl": "magnet:?xt=urn:btih:A9DF29DE659E590A8AD3CB084407BE38EC2CE4F2&dn=Big+Buck+Bunny+(2008)+720p+Bluray+nHD+x264-NhaNc3&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.demonii.com%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Fvito-tracker.space%3A6969%2Fannounce&tr=udp%3A%2F%2Fvito-tracker.duckdns.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.theoks.net%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.srv00.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.qu.ax%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.corpscorp.online%3A80%2Fannounce",
+-   "peers": 0,
+-   "score": null,
+-   "seeders": 1,
+-   "title": "Big Buck Bunny (2008) 720p Bluray nHD x264-NhaNc3",
+-   "tracker": "The Pirate Bay",
+-   "trackerId": "thepiratebay",
+-   "virusDetection": 0.2068728550253684
+-  },
+-  {
+-   "bytes": 928699593,
+-   "cachedOrigin": "The Pirate Bay (proxy v2)",
+-   "category": "Movies / HD",
+-   "categoryId": [
+-    3001000
+-   ],
+-   "date": "2010-03-09T03:00:44+00:00",
+-   "description": "The results of the Peach open movie project has been licensed under the Creative Commons Attribution 3.0 license. This includes all the data we\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2ll publish online and on the DVDs, and all of the contents on this website. If any content on this site is not licensed as such, it will be clearly indicated.\r\n\r\nIn short, this means you can freely reuse and distribute this content, also commercially, for as long you provide a proper attribution.\r\n\r\nThe attribution is:\r\n(c) copyright Blender Foundation | www.bigbuckbunny.org\r\n\r\nExcluded from the Creative Commons is: all logos on this website (including Blender logo, Peach logo, Creative Commons logo) and associated trademarks.\r\n\r\nhttp://www.bigbuckbunny.org/",
+-   "details": "https://knaben.xyz/thepiratebay/description.php?id=5421757",
+-   "grabs": 10,
+-   "hash": "9EE38ECC0105ED61B0EF93A875325AFE784B6FB5",
+-   "id": "2cfdf59484f0b479759fc1ac845ab03364356561",
+-   "lastSeen": "2026-11-10T16:13:50+00:00",
+-   "link": null,
+-   "livePeers": 0,
+-   "liveSeeders": 1,
+-   "magnetUrl": "magnet:?xt=urn:btih:9EE38ECC0105ED61B0EF93A875325AFE784B6FB5&dn=Big.Buck.Bunny.1080p.Surround&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce&tr=udp%3A%2F%2Fpublic.popcorn-tracker.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.dler.org%3A6969%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969&tr=udp%3A%2F%2Fopen.demonii.com%3A1337%2Fannounce&tr=udp%3A%2F%2Fglotorrents.pw%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftorrent.gresille.org%3A80%2Fannounce&tr=udp%3A%2F%2Fp4p.arenabg.com%3A1337&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337",
+-   "peers": 0,
+-   "score": null,
+-   "seeders": 1,
+-   "title": "Big.Buck.Bunny.1080p.Surround",
+-   "tracker": "The Pirate Bay",
+-   "trackerId": "thepiratebay",
+-   "virusDetection": 0.17646224308348027
+-  },
+-  {
+-   "bytes": 78356166,
+-   "cachedOrigin": "The Pirate Bay",
+-   "category": "Movies / HD",
+-   "categoryId": [
+-    3001000,
+-    3000000
+-   ],
+-   "date": "2011-03-07T11:44:03+00:00",
+-   "description": "Uploader: MitZep<br>Big Buck Bunny (2008) BRRip 720p x264 -MitZep",
+-   "details": "https://knaben.xyz/thepiratebay/description.php?id=6225770",
+-   "grabs": 0,
+-   "hash": "54DEC3E7B1169FAD5587D5A9E30FAFA92097EAB7",
+-   "id": "04ef3f870d563b3def90b6e3775157b9cecbd877",
+-   "lastSeen": "2026-11-12T01:31:31+00:00",
+-   "link": null,
+-   "livePeers": 4,
+-   "liveSeeders": 0,
+-   "magnetUrl": "magnet:?xt=urn:btih:54DEC3E7B1169FAD5587D5A9E30FAFA92097EAB7&dn=Big+Buck+Bunny+(2008)+BRRip+720p+x264+-MitZep&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.demonii.com%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Fvito-tracker.space%3A6969%2Fannounce&tr=udp%3A%2F%2Fvito-tracker.duckdns.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.theoks.net%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.srv00.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.qu.ax%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.corpscorp.online%3A80%2Fannounce",
+-   "peers": 0,
+-   "score": null,
+-   "seeders": 0,
+-   "title": "Big Buck Bunny (2008) BRRip 720p x264 -MitZep",
+-   "tracker": "The Pirate Bay",
+-   "trackerId": "thepiratebay",
+-   "virusDetection": 0.11192596842139677
+-  }
+- ],
+- "max_score": null,
+- "total": {
+-  "relation": "eq",
+-  "value": 21
+- }
+-}
+\ No newline at end of file
+diff --git a/app/backend/internal/sources/testdata/sites/subsplease.json b/app/backend/internal/sources/testdata/sites/subsplease.json
+deleted file mode 100644
+index 4e0bdf1..0000000
+--- a/app/backend/internal/sources/testdata/sites/subsplease.json
++++ /dev/null
+@@ -1,48 +0,0 @@
+-{
+- "Sousou no Frieren - 01-28": {
+-  "time": "05/27/26",
+-  "release_date": "Wed, 27 May 2026 17:36:01 +0000",
+-  "show": "Sousou no Frieren",
+-  "episode": "01-28",
+-  "downloads": [
+-   {
+-    "res": "480",
+-    "magnet": "magnet:?xt=urn:btih:RG4AGGQUMB4MGRUYN745JBZDJAOFWMNY&dn=%5BSubsPlease%5D%20Sousou%20no%20Frieren%20%2801-28%29%20%28480p%29%20%5BBatch%5D&xl=11203830129&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=http%3A%2F%2Ftracker.mywaifu.best%3A6969%2Fannounce&tr=https%3A%2F%2Ftracker.zhuqiy.com%3A443%2Fannounce&tr=udp%3A%2F%2Ftracker.tryhackx.org%3A6969%2Fannounce&tr=udp%3A%2F%2Fretracker.hotplug.ru%3A2710%2Fannounce&tr=udp%3A%2F%2Ftracker.dler.com%3A6969%2Fannounce&tr=http%3A%2F%2Ftracker.beeimg.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com"
+-   },
+-   {
+-    "res": "720",
+-    "magnet": "magnet:?xt=urn:btih:T7E4KFRNHCBPFVBMECSNZHS3X75DIGRN&dn=%5BSubsPlease%5D%20Sousou%20no%20Frieren%20%2801-28%29%20%28720p%29%20%5BBatch%5D&xl=21528906312&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=http%3A%2F%2Ftracker.mywaifu.best%3A6969%2Fannounce&tr=https%3A%2F%2Ftracker.zhuqiy.com%3A443%2Fannounce&tr=udp%3A%2F%2Ftracker.tryhackx.org%3A6969%2Fannounce&tr=udp%3A%2F%2Fretracker.hotplug.ru%3A2710%2Fannounce&tr=udp%3A%2F%2Ftracker.dler.com%3A6969%2Fannounce&tr=http%3A%2F%2Ftracker.beeimg.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com"
+-   },
+-   {
+-    "res": "1080",
+-    "magnet": "magnet:?xt=urn:btih:DXVR3ULSUUBCR24KSSUVGXDNBEUXN3SE&dn=%5BSubsPlease%5D%20Sousou%20no%20Frieren%20%2801-28%29%20%281080p%29%20%5BBatch%5D&xl=42197968571&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=http%3A%2F%2Ftracker.mywaifu.best%3A6969%2Fannounce&tr=https%3A%2F%2Ftracker.zhuqiy.com%3A443%2Fannounce&tr=udp%3A%2F%2Ftracker.tryhackx.org%3A6969%2Fannounce&tr=udp%3A%2F%2Fretracker.hotplug.ru%3A2710%2Fannounce&tr=udp%3A%2F%2Ftracker.dler.com%3A6969%2Fannounce&tr=http%3A%2F%2Ftracker.beeimg.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com"
+-   }
+-  ],
+-  "xdcc": "%22%5BSubsPlease%5D+Sousou+no+Frieren%22",
+-  "image_url": "/wp-content/uploads/2023/09/138006.jpg",
+-  "page": "sousou-no-frieren"
+- },
+- "Sousou no Frieren - 11": {
+-  "time": "11/17/23",
+-  "release_date": "Fri, 17 Nov 2023 16:02:24 +0000",
+-  "show": "Sousou no Frieren",
+-  "episode": "11",
+-  "downloads": [
+-   {
+-    "res": "480",
+-    "magnet": "magnet:?xt=urn:btih:5QXSXEJ2R6LTIPKLQ45ZWE5AMINTBB6O&dn=%5BSubsPlease%5D%20Sousou%20no%20Frieren%20-%2011%20%28480p%29%20%5BE3A884DB%5D.mkv&xl=391167965&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=http%3A%2F%2Ftracker.mywaifu.best%3A6969%2Fannounce&tr=https%3A%2F%2Ftracker.zhuqiy.com%3A443%2Fannounce&tr=udp%3A%2F%2Ftracker.tryhackx.org%3A6969%2Fannounce&tr=udp%3A%2F%2Fretracker.hotplug.ru%3A2710%2Fannounce&tr=udp%3A%2F%2Ftracker.dler.com%3A6969%2Fannounce&tr=http%3A%2F%2Ftracker.beeimg.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com"
+-   },
+-   {
+-    "res": "720",
+-    "magnet": "magnet:?xt=urn:btih:D745ZLQ3OZEGAGS2FFXXP4DIDPWLTE5G&dn=%5BSubsPlease%5D%20Sousou%20no%20Frieren%20-%2011%20%28720p%29%20%5B771E2EF1%5D.mkv&xl=764704327&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=http%3A%2F%2Ftracker.mywaifu.best%3A6969%2Fannounce&tr=https%3A%2F%2Ftracker.zhuqiy.com%3A443%2Fannounce&tr=udp%3A%2F%2Ftracker.tryhackx.org%3A6969%2Fannounce&tr=udp%3A%2F%2Fretracker.hotplug.ru%3A2710%2Fannounce&tr=udp%3A%2F%2Ftracker.dler.com%3A6969%2Fannounce&tr=http%3A%2F%2Ftracker.beeimg.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com"
+-   },
+-   {
+-    "res": "1080",
+-    "magnet": "magnet:?xt=urn:btih:QU77B77YID7KZUG5BN5U2JQVWU4MOOOJ&dn=%5BSubsPlease%5D%20Sousou%20no%20Frieren%20-%2011%20%281080p%29%20%5B0A32A51E%5D.mkv&xl=1494147507&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=http%3A%2F%2Ftracker.mywaifu.best%3A6969%2Fannounce&tr=https%3A%2F%2Ftracker.zhuqiy.com%3A443%2Fannounce&tr=udp%3A%2F%2Ftracker.tryhackx.org%3A6969%2Fannounce&tr=udp%3A%2F%2Fretracker.hotplug.ru%3A2710%2Fannounce&tr=udp%3A%2F%2Ftracker.dler.com%3A6969%2Fannounce&tr=http%3A%2F%2Ftracker.beeimg.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com"
+-   }
+-  ],
+-  "xdcc": "%22%5BSubsPlease%5D+Sousou+no+Frieren+-+11%22",
+-  "image_url": "/wp-content/uploads/2023/09/138006.jpg",
+-  "page": "sousou-no-frieren"
+- }
+-}
+\ No newline at end of file
+diff --git a/app/backend/internal/sources/testdata/sites/torrentscsv.json b/app/backend/internal/sources/testdata/sites/torrentscsv.json
+deleted file mode 100644
+index 7442450..0000000
+--- a/app/backend/internal/sources/testdata/sites/torrentscsv.json
++++ /dev/null
+@@ -1,16 +0,0 @@
+-{
+- "torrents": [
+-  {
+-   "infohash": "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c",
+-   "name": "Big Buck Bunny",
+-   "size_bytes": 276445467,
+-   "created_unix": 1701325597,
+-   "seeders": 348,
+-   "leechers": 55,
+-   "completed": 9016,
+-   "scraped_date": 1792938860,
+-   "id": 2441
+-  }
+- ],
+- "next": 2441
+-}
+\ No newline at end of file
+diff --git a/app/backend/tools/structurecheck/testdata/json-keys.txt b/app/backend/tools/structurecheck/testdata/json-keys.txt
+index 50edfaa..6e91e2f 100644
+--- a/app/backend/tools/structurecheck/testdata/json-keys.txt
++++ b/app/backend/tools/structurecheck/testdata/json-keys.txt
+@@ -376,7 +376,6 @@ crawl_kbps
+ created
+ created_at
+ created_by
+-created_unix
+ credits
+ crew
+ current
+@@ -418,7 +417,6 @@ department
+ description
+ desktop
+ detail
+-details
+ details_source
+ device
+ died
+@@ -726,7 +724,6 @@ hints
+ history
+ history_other_days
+ history_routine_days
+-hits
+ hlsManifestUrl
+ hold
+ hold_unknown_releases
+@@ -774,7 +771,6 @@ indexers
+ indexes
+ info
+ infoHash
+-infohash
+ inherit
+ inspection_status
+ instanceName
+@@ -859,7 +855,6 @@ latest
+ layer
+ leans
+ leave_folders
+-leechers
+ left
+ left_out
+ left_until_done
+@@ -913,8 +908,6 @@ machine_made
+ machine_translated
+ made
+ made_by
+-magnet
+-magnetUrl
+ main
+ mal
+ mapped
+@@ -1073,6 +1066,7 @@ next_search
+ next_try
+ next_try_at
+ no_downloader
++no_feed
+ no_formats
+ no_limit
+ no_release
+@@ -1405,7 +1399,6 @@ requested_by
+ requests
+ require_two_factor_admins
+ required
+-res
+ reset_time_utc
+ resolution
+ resource
+diff --git a/app/frontend/src/lib/sources/api.ts b/app/frontend/src/lib/sources/api.ts
+index bf739f5..4356d0a 100644
+--- a/app/frontend/src/lib/sources/api.ts
++++ b/app/frontend/src/lib/sources/api.ts
+@@ -116,14 +116,12 @@ export function formFrom(s: SourceView): SourceForm {
+ 	};
+ }
+ 
+-// The built-in sites a Source can read directly, with their polite limits.
+-// Names are the sites' own names, so they are not translated.
+-export const builtInSites = [
+-	{ id: 'knaben', name: 'Knaben', url: 'https://api.knaben.org', key: false, kinds: ['movie', 'tv', 'music'], gap_ms: 2000, per_hour: 100, timeout_s: 20 },
+-	{ id: 'torrentscsv', name: 'TorrentsCSV', url: 'https://torrents-csv.com', key: false, kinds: ['movie', 'tv', 'music'], gap_ms: 2000, per_hour: 100, timeout_s: 20 },
+-	{ id: 'subsplease', name: 'SubsPlease', url: 'https://subsplease.org', key: false, kinds: ['tv'], gap_ms: 2000, per_hour: 100, timeout_s: 20 },
+-	{ id: 'iptorrents', name: 'IPTorrents', url: 'https://iptorrents.com', key: true, kinds: ['movie', 'tv', 'music'], gap_ms: 3000, per_hour: 60, timeout_s: 30 }
+-] as const;
++// The sites a Source can read directly, with their polite limits.
++// HolyArrs fork, patch 001: the four built-in site readers are out, so the
++// list is empty and the page hides the "site" choice; a plugged-in reader
++// (sites.go) appears here when the add-a-source wizard reads the server's list.
++export type BuiltInSite = { id: string; name: string; url: string; key: boolean; kinds: readonly string[]; gap_ms: number; per_hour: number; timeout_s: number };
++export const builtInSites: readonly BuiltInSite[] = [];
+ 
+ // pickSite fills a new form with a built-in site's address and limits.
+ export function pickSite(f: SourceForm, id: string): void {
+diff --git a/app/frontend/src/routes/settings/sources/+page.svelte b/app/frontend/src/routes/settings/sources/+page.svelte
+index 2d69c36..ae290e0 100644
+--- a/app/frontend/src/routes/settings/sources/+page.svelte
++++ b/app/frontend/src/routes/settings/sources/+page.svelte
+@@ -65,7 +65,7 @@
+ 
+ 	function setFormat(v: string) {
+ 		form.format = v as SourceForm['format'];
+-		if (form.format === 'site' && !form.site) pickSite(form, builtInSites[0].id);
++		if (form.format === 'site' && !form.site) pickSite(form, builtInSites[0]?.id ?? '');
+ 	}
+ 
+ 	function toggleKind(k: string, on: boolean) {
+@@ -154,7 +154,7 @@
+ 						<option value="torznab">{t('settings.sources.torznab')}</option>
+ 						<option value="newznab">{t('settings.sources.newznab')}</option>
+ 						<option value="rss">{t('settings.sources.rss')}</option>
+-						{#if isNew || form.format === 'site'}<option value="site">{t('settings.sources.site')}</option>{/if}
++						{#if (isNew && builtInSites.length > 0) || form.format === 'site'}<option value="site">{t('settings.sources.site')}</option>{/if}
+ 					</select>
+ 				</Field>
+ 				{#if form.format === 'site'}

@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Muhammad Jagot <MoJagotasdfgh@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 23:03:23 +0200
+Subject: [PATCH] fork 000: fork base (fork-info command, build stamp)
+
+What: new files cmd/holyarrs/fork_main.go (the fork's own first words on
+the command line, forkCommand, the first one being fork-info, and the build
+stamp main.forkBuild) and zz_fork_init.go (an init that runs a fork command
+before main(); its name keeps it last among the package's init functions).
+
+Why: fork/apply.ps1 and the home hub ask a program what it is (version,
+flavour, patches, plugged-in site readers). Later patches register their
+commands and names from init() instead of editing main() again.
+
+Check: cmd/holyarrs/fork_check_000_test.go (the hook is there and sorts
+last, the commands answer); apply.ps1 reads fork-info from holyarrs-mod.exe.
+
+Upstream files edited: none (upstream's structure check caps main.go at
+800 lines, and it is at 800).
+---
+ .../cmd/holyarrs/fork_check_000_test.go       | 44 +++++++++++++
+ app/backend/cmd/holyarrs/fork_main.go         | 61 +++++++++++++++++++
+ app/backend/cmd/holyarrs/zz_fork_init.go      | 15 +++++
+ 3 files changed, 120 insertions(+)
+ create mode 100644 app/backend/cmd/holyarrs/fork_check_000_test.go
+ create mode 100644 app/backend/cmd/holyarrs/fork_main.go
+ create mode 100644 app/backend/cmd/holyarrs/zz_fork_init.go
+
+diff --git a/app/backend/cmd/holyarrs/fork_check_000_test.go b/app/backend/cmd/holyarrs/fork_check_000_test.go
+new file mode 100644
+index 0000000..1a0999c
+--- /dev/null
++++ b/app/backend/cmd/holyarrs/fork_check_000_test.go
+@@ -0,0 +1,44 @@
++package main
++
++// HolyArrs fork, check for patch 000 (fork base): the hook runs last and the
++// fork's commands answer.
++
++import (
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++// zz_fork_init.go runs the fork's commands and sorts after every other Go
++// file here, so its init runs last.
++func TestForkCheck000Hook(t *testing.T) {
++	src, err := os.ReadFile("zz_fork_init.go")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(string(src), "forkCommand(os.Args[1:])") {
++		t.Fatal("zz_fork_init.go no longer calls forkCommand")
++	}
++	names, err := filepath.Glob("*.go")
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, n := range names {
++		if !strings.HasSuffix(n, "_test.go") && n > "zz_fork_init.go" {
++			t.Fatalf("%s sorts after zz_fork_init.go: its init would run after the fork command", n)
++		}
++	}
++}
++
++func TestForkCheck000Commands(t *testing.T) {
++	if _, ok := forkCommand(nil); ok {
++		t.Fatal("no words ran a fork command")
++	}
++	if _, ok := forkCommand([]string{"-config", "x"}); ok {
++		t.Fatal("server flags ran a fork command")
++	}
++	if _, ok := forkCommands["fork-info"]; !ok {
++		t.Fatal("fork-info missing")
++	}
++}
+diff --git a/app/backend/cmd/holyarrs/fork_main.go b/app/backend/cmd/holyarrs/fork_main.go
+new file mode 100644
+index 0000000..77cdba9
+--- /dev/null
++++ b/app/backend/cmd/holyarrs/fork_main.go
+@@ -0,0 +1,61 @@
++package main
++
++// HolyArrs fork (MoJagotasdfgh/HolyArrs), patch 000: the fork's own first
++// words on the command line and its build stamp. zz_fork_init.go runs a
++// fork command before main() (no edit to main.go: upstream caps its size);
++// every later patch registers itself from init().
++
++import (
++	"encoding/json"
++	"fmt"
++	"os"
++	"sort"
++
++	"github.com/HolyArrs/holyarrs/app/backend/internal/sources"
++)
++
++// forkBuild is stamped by fork/apply.ps1: -X main.forkBuild=mod+r<recipe>.
++var forkBuild = "unstamped"
++
++// forkCommands are the fork's commands (fork-info, service, ...); each
++// returns the exit code.
++var forkCommands = map[string]func(args []string) int{}
++
++// forkPatches names the patches compiled into this program.
++var forkPatches = []string{"000-fork-base"}
++
++func init() { forkCommands["fork-info"] = forkInfo }
++
++// forkCommand runs a fork command when args start with one.
++func forkCommand(args []string) (int, bool) {
++	if len(args) == 0 {
++		return 0, false
++	}
++	fn, ok := forkCommands[args[0]]
++	if !ok {
++		return 0, false
++	}
++	return fn(args[1:]), true
++}
++
++// forkInfo prints what this program is, for the recipe's checks and for the
++// hub: version, build stamp, patches, commands and plugged-in site readers.
++func forkInfo([]string) int {
++	cmds := make([]string, 0, len(forkCommands))
++	for k := range forkCommands {
++		cmds = append(cmds, k)
++	}
++	sort.Strings(cmds)
++	patches := append([]string(nil), forkPatches...)
++	sort.Strings(patches)
++	sites := make([]string, 0, len(sources.Sites))
++	for _, s := range sources.Sites {
++		sites = append(sites, s.ID)
++	}
++	out, err := json.Marshal(map[string]any{"version": version, "build": forkBuild, "patches": patches, "commands": cmds, "site_readers": sites})
++	if err != nil {
++		return 1
++	}
++	fmt.Fprintln(os.Stdout, string(out))
++	return 0
++}
+diff --git a/app/backend/cmd/holyarrs/zz_fork_init.go b/app/backend/cmd/holyarrs/zz_fork_init.go
+new file mode 100644
+index 0000000..5b8b859
+--- /dev/null
++++ b/app/backend/cmd/holyarrs/zz_fork_init.go
+@@ -0,0 +1,15 @@
++package main
++
++// HolyArrs fork, patch 000: runs a fork command (fork-info, service) before
++// main(). Go runs a package's init functions in file-name order, so this
++// file's name keeps it last: every other init of this package has run.
++// Server flags and upstream's own commands never match, so they fall
++// through to main() unchanged.
++
++import "os"
++
++func init() {
++	if code, ok := forkCommand(os.Args[1:]); ok {
++		os.Exit(code)
++	}
++}
