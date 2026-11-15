@@ -31,6 +31,7 @@ No sources, trackers, sites or scrapers are added by this recipe.
 ```powershell
 .\fork\apply.ps1 -Upstream 1.1.4 -Go <path to go.exe>     # full run
 .\fork\apply.ps1 -Upstream 1.1.5 -PatchOnly               # does the recipe still apply?
+.\fork\apply.ps1 -Upstream 1.1.4 -Skip 002                # pick patches: all but 002
 ```
 
 It checks out the tag in a scratch worktree, builds **holyarrs-stock.exe**
@@ -46,6 +47,15 @@ upstream's Go tests. Output: `<BuildRoot>\recipe\<tag>\` with both programs,
 Both programs carry the upstream version (`-X main.version=<tag>`); the mod
 also carries `-X main.forkBuild=mod+r<recipe commit>` (see `holyarrs-mod.exe fork-info`).
 
+## Picking patches (like Morphe, at build time)
+
+`-Skip 002` (or `-Skip 001,002`) leaves patches out. Each patch message
+carries a `Needs:` line (`none`, or the patches it builds on: 002 and 003
+need 000); a choice that drops a needed patch is refused (exit 2). A run
+with `-Skip` writes to `recipe\<tag>-no<NNN>\` and stamps the mod
+`mod+r<commit>-no<NNN>`, so it never overwrites the full build. Live
+on/off switches inside the running app come later (a Fork page in Settings).
+
 ## Rules that keep the recipe cheap
 
 - Add new files rather than edit upstream ones; an edit to an upstream file
@@ -55,7 +65,8 @@ also carries `-X main.forkBuild=mod+r<recipe commit>` (see `holyarrs-mod.exe for
   JSON keys the server uses are a snapshot a patch must update.
 - No patch touches database migrations. Stock and mod never share a config
   folder (stock must never open a database the mod wrote, and the reverse).
-- One patch, one job, one check test named `fork_check_NNN_test.go`.
+- One patch, one job, one check test named `fork_check_NNN_test.go`, and a
+  `Needs:` line in its message.
 - Private stays private: settings, keys (`holyarrs.key`), databases and
   backups never go into this repository.
 

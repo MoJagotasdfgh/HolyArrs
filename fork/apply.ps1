@@ -11,6 +11,10 @@
   5. Runs the fork's checks (fork_check_*_test.go, the patches' "fingerprints")
      and program-level checks (fork-info, no built-in site addresses).
   6. Runs upstream's Go tests (skip with -SkipUpstreamTests).
+  -Skip leaves patches out (Morphe-style picking at build time). Each patch's
+  message has a "Needs:" line; a patch whose needs are skipped is refused.
+  A run with -Skip writes to <BuildRoot>\recipe\<tag>-no<NNN...>\ so it never
+  overwrites the full build, and stamps the mod mod+r<commit>-no<NNN...>.
   Both programs carry a version stamp (-X main.version=<tag>); the mod also
   carries -X main.forkBuild=mod+r<recipe commit>.
   Everything lands in <BuildRoot>\recipe\<tag>\ with build-info.json.
@@ -20,6 +24,8 @@
   .\fork\apply.ps1 -Upstream 1.1.4 -Go D:\tools\go\bin\go.exe
 .EXAMPLE
   .\fork\apply.ps1 -Upstream 1.1.5 -PatchOnly     # does the recipe still apply?
+.EXAMPLE
+  .\fork\apply.ps1 -Upstream 1.1.4 -Skip 002       # all patches but 002
 
   Exit codes: 0 ok, 2 bad input, 3 a patch failed, 4 a build failed,
   5 a fork check failed, 6 upstream tests failed.
@@ -32,6 +38,7 @@ param(
   [string]$Npm = 'npm.cmd',
   [string]$Git = 'git',
   [int]$TestParallel = 2,
+  [string[]]$Skip = @(),
   [switch]$PatchOnly,
   [switch]$SkipUpstreamTests
 )
@@ -51,17 +58,34 @@ function Invoke-Native([string]$Exe, [string[]]$ArgList, [string]$LogFile) {
 function Stop-Recipe([int]$Code, [string]$Why) { Write-Step "STOP ($Code): $Why"; exit $Code }
 
 $PatchFolder = Join-Path $PSScriptRoot 'patches'
-$Patches = @(Get-ChildItem -Path $PatchFolder -Filter '*.patch' | Sort-Object Name)
-if ($Patches.Count -eq 0) { Stop-Recipe 2 "no patches in $PatchFolder" }
+$AllPatches = @(Get-ChildItem -Path $PatchFolder -Filter '*.patch' | Sort-Object Name)
+if ($AllPatches.Count -eq 0) { Stop-Recipe 2 "no patches in $PatchFolder" }
+# -Skip takes numbers or names (002, 002-private-defaults); commas work too.
+$SkipNumbers = @($Skip | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { ($_ -split '-')[0] })
+foreach ($SkipNumber in $SkipNumbers) {
+  if (-not ($AllPatches | Where-Object { $_.Name.StartsWith("$SkipNumber-") })) { Stop-Recipe 2 "-Skip $SkipNumber names no patch (patches: $(($AllPatches | ForEach-Object { $_.BaseName }) -join ', '))" }
+}
+$Patches = @($AllPatches | Where-Object { $SkipNumbers -notcontains ($_.Name -split '-')[0] })
+if ($Patches.Count -eq 0) { Stop-Recipe 2 "-Skip leaves no patch" }
+# Needs: each kept patch's needs must be kept too.
+$KeptNames = @($Patches | ForEach-Object { $_.BaseName })
+foreach ($PatchFile in $Patches) {
+  $NeedsLine = Select-String -Path $PatchFile.FullName -Pattern '^Needs:\s*(.+)$' | Select-Object -First 1
+  if (-not $NeedsLine) { Stop-Recipe 2 "patch $($PatchFile.Name) has no Needs: line" }
+  foreach ($Need in ($NeedsLine.Matches[0].Groups[1].Value -split '[,\s]+' | Where-Object { $_ -and $_ -ne 'none' })) {
+    if ($KeptNames -notcontains $Need) { Stop-Recipe 2 "patch $($PatchFile.BaseName) needs $Need, which -Skip leaves out" }
+  }
+}
+$SkipSuffix = if ($SkipNumbers.Count) { '-no' + (($SkipNumbers | Sort-Object -Unique) -join '-') } else { '' }
 $TagCommit = (& $Git -C $Repo rev-parse --verify --quiet "refs/tags/$Upstream^{commit}")
 if (-not $TagCommit) { Stop-Recipe 2 "tag $Upstream not found (git fetch origin --tags)" }
 $RecipeCommit = (& $Git -C $Repo rev-parse --short=12 HEAD)
 $RecipeDirty = @(& $Git -C $Repo status --porcelain -- fork).Count -gt 0
-$OutFolder = Join-Path $BuildRoot "recipe\$Upstream"
+$OutFolder = Join-Path $BuildRoot "recipe\$Upstream$SkipSuffix"
 $SourceTree = Join-Path $OutFolder 'src'
 New-Item -ItemType Directory -Force -Path $OutFolder, "$BuildRoot\gocache", "$BuildRoot\gomod" | Out-Null
 $env:GOCACHE = "$BuildRoot\gocache"; $env:GOMODCACHE = "$BuildRoot\gomod"; $env:CGO_ENABLED = '0'
-Write-Step "upstream $Upstream = $($TagCommit.Substring(0,12)); recipe $RecipeCommit$(if ($RecipeDirty) {' (fork folder has uncommitted changes)'}); $($Patches.Count) patches"
+Write-Step "upstream $Upstream = $($TagCommit.Substring(0,12)); recipe $RecipeCommit$(if ($RecipeDirty) {' (fork folder has uncommitted changes)'}); $($Patches.Count) patches$(if ($SkipSuffix) { " (skipped: $($SkipNumbers -join ', '))" })"
 
 # 1. Clean checkout of the tag.
 if (Test-Path $SourceTree) { [void](Invoke-Native $Git @('-C', $Repo, 'worktree', 'remove', '--force', $SourceTree)) }
@@ -100,7 +124,7 @@ foreach ($PatchFile in $Patches) {
 if ($PatchOnly) { Write-Step "all $($Patches.Count) patches apply to $Upstream (PatchOnly: nothing built)"; exit 0 }
 
 # 4. The mod.
-Build-HolyArrs 'mod' 'holyarrs-mod.exe' "-s -w -X main.version=$Upstream -X main.forkBuild=mod+r$RecipeCommit"
+Build-HolyArrs 'mod' 'holyarrs-mod.exe' "-s -w -X main.version=$Upstream -X main.forkBuild=mod+r$RecipeCommit$SkipSuffix"
 
 # 5. Our checks: the patches' fingerprint tests, then the programs themselves.
 Write-Step "fork checks"
@@ -118,6 +142,8 @@ $ForkInfoText = (& "$OutFolder\holyarrs-mod.exe" fork-info 2>&1 | Out-String).Tr
 $ErrorActionPreference = $PreviousPreference
 Add-Content -Path $CheckLog -Value "fork-info: $ForkInfoText"
 try { $ForkInfo = $ForkInfoText | ConvertFrom-Json } catch { $ForkInfo = $null; $ProgramProblems += 'fork-info did not answer JSON' }
+$Has000 = $Applied -contains '000-fork-base'; $Has001 = $Applied -contains '001-sites-plugin-slot'
+if (-not $Has000) { $ForkInfo = $null; $ProgramProblems = @($ProgramProblems | Where-Object { $_ -ne 'fork-info did not answer JSON' }) }
 if ($ForkInfo) {
   if ($ForkInfo.version -ne $Upstream) { $ProgramProblems += "mod version is $($ForkInfo.version)" }
   foreach ($AppliedName in $Applied) { if (@($ForkInfo.patches) -notcontains $AppliedName -and $AppliedName -match '^(000|002|003)-') { $ProgramProblems += "patch $AppliedName not in the program" } }
@@ -133,16 +159,17 @@ $ModHosts = Find-Hosts "$OutFolder\holyarrs-mod.exe"
 Add-Content -Path $CheckLog -Value "site addresses in stock: $($StockHosts -join ', ')"
 Add-Content -Path $CheckLog -Value "site addresses in mod: $($ModHosts -join ', ')"
 if ($StockHosts.Count -eq 0) { $ProgramProblems += 'the address scan found nothing in stock (scan broken?)' }
-if ($ModHosts.Count -gt 0) { $ProgramProblems += "mod still holds: $($ModHosts -join ', ')" }
+if ($Has001 -and $ModHosts.Count -gt 0) { $ProgramProblems += "mod still holds: $($ModHosts -join ', ')" }
+if (-not $Has001 -and $ModHosts.Count -eq 0) { $ProgramProblems += '001 skipped but the mod holds no site address (scan broken?)' }
 $ProgramProblems | ForEach-Object { Add-Content -Path $CheckLog -Value "PROBLEM: $_" }
 Write-Step "  fork checks: $CheckPassed passed, $CheckFailed failed (go test exit $CheckCode); program checks: $(if ($ProgramProblems.Count) { $ProgramProblems -join '; ' } else { 'ok' })"
 
 function Write-BuildInfo([string]$TestSummary) {
   $Info = [ordered]@{
-    upstream = $Upstream; upstream_commit = $TagCommit; recipe_commit = $RecipeCommit; recipe_dirty = $RecipeDirty
+    upstream = $Upstream; upstream_commit = $TagCommit; recipe_commit = $RecipeCommit; recipe_dirty = $RecipeDirty; skipped = @($SkipNumbers)
     patches = @($Patches | ForEach-Object { [ordered]@{ name = $_.Name; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() } })
     stock = [ordered]@{ exe = 'holyarrs-stock.exe'; sha256 = (Get-FileHash "$OutFolder\holyarrs-stock.exe").Hash.ToLower(); version = $Upstream }
-    mod = [ordered]@{ exe = 'holyarrs-mod.exe'; sha256 = (Get-FileHash "$OutFolder\holyarrs-mod.exe").Hash.ToLower(); version = $Upstream; build = "mod+r$RecipeCommit" }
+    mod = [ordered]@{ exe = 'holyarrs-mod.exe'; sha256 = (Get-FileHash "$OutFolder\holyarrs-mod.exe").Hash.ToLower(); version = $Upstream; build = "mod+r$RecipeCommit$SkipSuffix" }
     fork_checks = [ordered]@{ passed = $CheckPassed; failed = $CheckFailed; program_problems = $ProgramProblems }
     upstream_tests = $TestSummary
     built_at = (Get-Date).ToString('s'); minutes = [math]::Round($RecipeStopWatch.Elapsed.TotalMinutes, 1)

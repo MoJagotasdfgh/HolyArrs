@@ -25,6 +25,8 @@ Upstream files edited: cmd/holyarrs/main.go, two lines changed in place
 (metadata.NewHosted becomes forkHosted, which seeds first; the update feed
 default); no lines added, as upstream caps main.go at 800 lines.
 No database migration: ordinary settings rows.
+
+Needs: 000-fork-base
 ---
  .../cmd/holyarrs/fork_check_002_test.go       | 78 +++++++++++++++++++
  app/backend/cmd/holyarrs/fork_defaults.go     | 71 +++++++++++++++++

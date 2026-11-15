@@ -19,6 +19,8 @@ Check: cmd/holyarrs/fork_check_003_test.go (the arguments, the 127.0.0.1
 default, refusal by hand, the exit codes, the Windows side present).
 
 Upstream files edited: none.
+
+Needs: 000-fork-base
 ---
  .../cmd/holyarrs/fork_check_003_test.go       | 57 ++++++++++++
  app/backend/cmd/holyarrs/fork_service.go      | 79 ++++++++++++++++

@@ -29,6 +29,8 @@ frontend/src/lib/sources/api.ts, routes/settings/sources/+page.svelte, and the J
 tools/structurecheck/testdata/json-keys.txt (the readers' keys out,
 no_feed in);
 internal/sources/testdata/sites removed. No database migration.
+
+Needs: none
 ---
  .../internal/sources/fork_check_001_test.go   |  76 ++++
  .../internal/sources/routes_sources.go        |   4 +-
